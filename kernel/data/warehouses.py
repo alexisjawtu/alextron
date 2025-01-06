@@ -1,7 +1,9 @@
 import pandas as pd
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
+from kernel.data.helpers import ShiftHolder
+from kernel.data.shift import Shift, ShiftKind
 
 class WorkersParametersProcessor: 
     def __init__(

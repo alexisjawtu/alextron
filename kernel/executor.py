@@ -1,18 +1,16 @@
 import cplex
 import logging
 import pandas as pd
-
 import kernel.util.readers as readers
 
 from typing import Dict
 
 from kernel.formulation.model import BasicModel
 from kernel.formulation.short_term_formulation import ShortTermFormulation
-from kernel.data.helpers import OutputData, DataHolder, Process, TabulatedParameterHolder
+from kernel.data.helpers import OutputData, ShiftHolder, DataHolder, Process, TabulatedParameterHolder
+from kernel.data.shift import TabulatedShiftMapper
 from kernel.general_configurations import DevelopDumping, Configuration, FileNames, InputOutputPaths
 from kernel.output_test import OutputTest
-from kernel.data.shift_parameters import ShiftParametersGenerator
-
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -22,27 +20,25 @@ class RollingExecutor:
     def __init__(
             self,
             shift_interval: int,
-            shift_params: ShiftParametersGenerator,
+            shift_mapper: TabulatedShiftMapper,
+            shift_holder: ShiftHolder,
             data_holders: Dict[Process, DataHolder],
             params: Dict[Process, TabulatedParameterHolder],
-            raw_eh_parameters: pd.DataFrame,
-            df_dates: pd.DataFrame,  # <-- These are the human readable timestamps for the integer epochs.
             post_processors: Dict[Process, None] = {}
     ) -> None:
 
         self.shift_interval = shift_interval
-        self.shift_params = shift_params
+        self.shift_mapper = shift_mapper
+        self.shift_holder = shift_holder
         self.data_holders = data_holders
         self.params = params
-        self.raw_eh_parameters = raw_eh_parameters
-        self.human_epoch = df_dates
         self.post_processors = post_processors
         self.previous_solution = []  # list of cpx solution values
         self.objective_value_staffing_optimization = 0
         self.objective_value_stock_anticipation = 0
 
     def last_epoch_for_shift(self, shift):
-        epochs = self.shift_params.epochs_for_shift.get(shift)
+        epochs = self.shift_holder.epochs_for_shift.get(shift)
         return epochs.max() if len(epochs) else None
 
     def max_cpt_for_epoch_range(self, start: int, end: int) -> int:
@@ -88,7 +84,7 @@ class RollingExecutor:
 
         if Configuration.activate_hourly_workers:
             separated_vars.hourly_workers.to_csv(FileNames.HOURLY_WRKRS_OUTPUT %
-                                       InputOutputPaths.BASEDIR_OUT, index=False)
+                                       (InputOutputPaths.BASEDIR_OUT, process.name.lower()), index=False)
 
     def post_process(self, out_dfs: Dict[Process, pd.DataFrame]) -> Dict[Process, pd.DataFrame]:
         """
@@ -106,7 +102,6 @@ class RollingExecutor:
         return output
 
     def run(self) -> Dict[Process, pd.DataFrame]:
-        #TODO revisar porque esto asume un orden para definir la ultima hora valida
         shift_to = self.shift_interval - 1
         epoch_start = 0
         last_fixed_epoch = self.last_epoch_for_shift(shift_to)
@@ -127,24 +122,27 @@ class RollingExecutor:
             last_fixed_epoch,
             max(d.df["handling_idx"].max() for d in self.data_holders.values()),
             prev_separated_vars,
-            self.shift_params,
+            self.shift_mapper,
+            self.shift_holder,
             self.data_holders, 
-            self.params,
-            self.raw_eh_parameters,
+            self.params, 
             self.previous_solution, 
-            {},
-            self.human_epoch)
+            {})
+
         # TODO: this 'if' block is repeated. Make a method of it.
         if short_term_formulation:
+
             with cplex.Cplex() as cpx:
+
                 short_term_formulation.set_cplex(cpx)
                 short_term_formulation.define()
                 short_term_formulation.declare_global_shift_wrkrs()
                 short_term_formulation.declare_polys_shift_assigned()
                 short_term_formulation.declare_polys_hour_assigned()
-                if Configuration.activate_hourly_workers:
-                    short_term_formulation.declare_hourly_workers()
 
+                if Configuration.activate_hourly_workers:
+                    short_term_formulation.declare_extras_per_hour()
+                    
                 for proc in short_term_formulation.process_stages.values():
                     # declaration and setting for each of Inbound and Outbound
                     proc.declare_workers()
@@ -160,7 +158,7 @@ class RollingExecutor:
                     proc.set_inner_constraints()
                     proc.set_reps_evolution_restrictions()
                     proc.set_available_reps_natural_constraint()
-
+                
                 short_term_formulation.declare_global_minmaxs()
                 short_term_formulation.set_global_minmax_constraints()
                 short_term_formulation.set_linking_constraints()
@@ -168,22 +166,18 @@ class RollingExecutor:
                 short_term_formulation.set_polyvalent_presenteeism_constraint()
                 short_term_formulation.set_real_totals_per_stage_constraint()
 
-                if Configuration.activate_extra_hours:
-                    short_term_formulation.set_extra_hours_variables_and_constraints()
-
-                # basic_result is a model.BasicResult instance
+                # basic_result is a formulation.BasicResult instance
                 basic_result = short_term_formulation.run()
 
-                if basic_result.valid:
+                if basic_result.is_valid():
                     self.objective_value_staffing_optimization = cpx.solution.get_objective_value();
                     logger.info("Found an optimal assignment of workers.\n")
-                    self.previous_solution = basic_result.cplex_solution_list
+                    self.previous_solution = basic_result.get_cplex_solution_list()
 
                 else:
                     logger.error(f"\nCould not solve model. Phase: "
                                  f"{BasicModel.PHASE_NAMES[BasicModel.run_number]}.\n"
-                                 f"Please read {FileNames.LOG_FILE}, "
-                                 f"check possible infeasibilities and/or contact support.")
+                                 f"Please read {FileNames.LOG_FILE}, check possible infeasibilities and/or contact support.")
                     input("Press ENTER to quit.")
                     exit()
         else:
@@ -202,13 +196,13 @@ class RollingExecutor:
                 last_fixed_epoch,
                 max(d.df["handling_idx"].max() for d in self.data_holders.values()),
                 prev_separated_vars,
-                self.shift_params,
+                self.shift_mapper,
+                self.shift_holder,
                 self.data_holders,
                 self.params,
-                self.raw_eh_parameters,
-                basic_result.cplex_solution_list,
-                basic_result.cplex_ids,
-                self.human_epoch)
+                basic_result.get_cplex_solution_list(),
+                basic_result.get_cplex_ids()
+            )
 
             if short_term_formulation:
                 with cplex.Cplex() as cpx_stock:
@@ -221,7 +215,7 @@ class RollingExecutor:
                     short_term_formulation.set_optimal_polyvalent_values()
 
                     if Configuration.activate_hourly_workers:
-                        short_term_formulation.declare_hourly_workers()
+                        short_term_formulation.declare_extras_per_hour()
                         short_term_formulation.set_optimal_hourly_constraint()
 
                     for proc in short_term_formulation.process_stages.values():
@@ -232,24 +226,16 @@ class RollingExecutor:
                         proc.set_optimal_permanent_reps_values()  # fix amount of perms to anticipate backlog
                         proc.declare_and_constraint_stock_variables()
 
-                    short_term_formulation.set_work_capacity_constraint()
-
-                    # TODO: separate the declaration of the extra_hs reps and set the 
-                    #       optimal values for the second run
-                    # if Configuration.activate_extra_hours:
-                    #     short_term_formulation.set_extra_hours_variables_and_constraints()
-
                     basic_result = short_term_formulation.run()
 
-                    if basic_result.valid:
-                        self.objective_value_stock_anticipation = cpx_stock.solution.get_objective_value()
+                    if basic_result.is_valid():
+                        self.objective_value_stock_anticipation = cpx_stock.solution.get_objective_value();
                         logger.info('Found an optimal distribution of backlogs.\n')
 
                     else:
                         logger.error(f"\nCould not solve model. "
                                      f"Phase: {BasicModel.PHASE_NAMES[BasicModel.run_number]}.\n"
-                                     f"Please read {FileNames.LOG_FILE}, "
-                                     f"check possible infeasibilities and/or contact support.")
+                                     f"Please read {FileNames.LOG_FILE}, check possible infeasibilities and/or contact support.")
                         input("Press ENTER to quit.")
                         exit()
             else:
@@ -269,7 +255,7 @@ class RollingExecutor:
             if DevelopDumping.DEV or DevelopDumping.QAS or Configuration.generate_validation_files:
                 logger.info(f"Performing output checks. Writing results in folder {FileNames.VALIDATION_FOLDER}.\n")
 
-                output_checker = OutputTest(self.shift_params, self.params[Process.INBOUND],
+                output_checker = OutputTest(self.shift_holder, self.params[Process.INBOUND],
                                             self.params[Process.OUTBOUND], self.objective_value_staffing_optimization,
                                             self.objective_value_stock_anticipation)
 

@@ -1,6 +1,6 @@
 import cplex
 
-from sot_fbm_staffing.stages.short_term_model import ShortTermModel
+from kernel.stages.short_term_model import ShortTermModel
 
 
 class ShortTermInboundModel(ShortTermModel):
@@ -11,7 +11,8 @@ class ShortTermInboundModel(ShortTermModel):
 
     def receive_in_real_time(self):
         for t in range(self.start, self.end + 1):
-            cpts = [c for c in self.dh.dict_cpts_for_epoch[t] if c <= self.end and self.min_stage_for_cpt[c] == 0]
+            cpts = [c for c in self.dh.dict_cpts_for_epoch[t] 
+                    if c <= self.end and self.min_stage_for_cpt[c] == 0]
             indices_b = [self.b[cpt][0][t] for cpt in cpts]
             indices_y = [self.y[cpt][0][t] for cpt in cpts]
             indices = indices_b + indices_y

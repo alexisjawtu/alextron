@@ -26,6 +26,23 @@ def cast_to_bool(s: Any) -> bool:
     return b
 
 
+def cast_to_bool(s: Any) -> bool:
+    # If we put numbers and booleans in configuration.csv, Pandas will leave all of them as plain strings.
+    s = str(s).lower()
+    b = None
+
+    if s == "true":
+        b = True
+    elif s == "false":
+        b = False
+    else:
+        logger.error("Please review the boolean values in " + FileNames.CONFIG_FILE)
+        input("Press ENTER to close.")
+        exit()
+
+    return b
+
+
 @dataclass
 class FileNames:
     INPUT_FOLDER: str = "./input/"
@@ -33,7 +50,7 @@ class FileNames:
     VALIDATION_FOLDER: str = "./validation/"
     WARNING_FOLDER: str = "./warning/"
 
-    LOG_FILE: str = "alextron.log"
+    LOG_FILE: str = "moletron.log"
     CONFIG_FILE: str = "configuration.csv"
     # problem files
     CPX_FILE: str = "staffing"
@@ -46,8 +63,6 @@ class FileNames:
     SH_NAME_TO_CONTRACT_MOD: str = "shift_contract_modality.csv"
     CONTRACT_SUBCLASSES: str = "contract_modality_type.csv"
 
-    EXTRA_HOURS_PARAMETERS: str = "extra_hours_parameters.csv"
-    EXTRA_HOURS_DEV_TABLE: str = "extra_hours_expanded_table.csv"
     SHIFTS_PARAMS: str = "shifts_parameters.csv"
     SHIFTS_PARAMS_SCHEDULING: str = "shifts_parameters_scheduling.csv"
 
@@ -85,13 +100,13 @@ class FileNames:
     OUTBOUND_COEFS_TABLE: str = "outbound_check_coefficients_table_added.csv"
     OUTBOUND_WRKRS_INFO_TABLE: str = "outbound_check_process_workers_full_table.csv"
 
-    SHIFTS_TABLE_DEFINITIVE: str = "shifts_table_definitive.csv"
+    PARAMS_TABLE_DEFINITIVE: str = "parameters_table_definitive.csv"
     PARTIAL_ORDER_OF_SHIFTS: str = "shifts_ordered_by_week.py"
 
     ITEMS_OUTPUT: str = "%s/processed_%s.csv"
     WRKRS_OUTPUT: str = "%s/workers_%s.csv"
     POLYS_OUTPUT: str = "%s/polyvalents_moves.csv"
-    HOURLY_WRKRS_OUTPUT: str = "%s/hourly_workers.csv"
+    HOURLY_WRKRS_OUTPUT: str = "%s/hourly_workers_%s.csv"
 
     RESCHEDULE_RECORDS: str = "reschedule_records.csv"
     DF_WIPED_OUT: str = "df_wiped_out.csv"
@@ -105,11 +120,10 @@ class FileNames:
 
 @dataclass
 class DevelopDumping:
-    SUBDIR: str = "extra_hours_mock"  # "2_modalities_2_shifts_all" "input_fail_1.3.0 w47_1modality"
-    DEV: bool = True
+    SUBDIR: str = ""  # "3_modality_1_with_absences"  # "3_Modality_New" #"3_Miau_1_modality" # "3_Costo"
+    DEV: bool = False
     QAS: bool = False
-    MAKE_OUTPUT: bool = False
-    MAKE_TABLE: bool = False
+    MAKE_OUTPUT: bool = True
 
 
 @dataclass
@@ -153,7 +167,6 @@ class Configuration:
     activate_transfer: bool = cast_to_bool(dc_settings.get(fld_names.ACTIVATE_TRANSFER, "false"))
     activate_hourly_workers: bool = cast_to_bool(dc_settings.get(fld_names.ACTIVATE_HOURLY, "true"))
     cost_polyvalents: float = float(dc_settings.get("cost_polyvalents", 0.001))
-    activate_extra_hours: bool = cast_to_bool(dc_settings.get(fld_names.ACTIVATE_EH, "false"))
 
     hourly_workers_cost: float = float(dc_settings.get(fld_names.HOURLY_COST, 99.0))
     hourly_work_force: float = float(dc_settings.get(fld_names.HOURLY_FORCE, 7.0))

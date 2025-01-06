@@ -1,15 +1,15 @@
 import cplex
 import logging
-import sqlite3
+
 import pandas as pd
 
 from typing import List, Tuple, Dict
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.data.helpers import CplexIds, TabulatedParameterHolder, DataHolder, Process
-from sot_fbm_staffing.data.shift_parameters import ShiftParametersGenerator
-from sot_fbm_staffing.general_configurations import DevelopDumping, Configuration, FileNames
+from kernel.data.helpers import CplexIds, ShiftHolder, TabulatedParameterHolder, DataHolder, Process
+from kernel.data.shift import ShiftKind
+from kernel.general_configurations import DevelopDumping, Configuration, FileNames
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -19,8 +19,8 @@ class ShortTermModel:
     def __init__(
             self,
             cpx: cplex.Cplex,
-            data_holder: DataHolder,
-            shift_params: ShiftParametersGenerator,
+            dh: DataHolder,
+            sh: ShiftHolder,
             process: Process,
             start: int,
             rolling_fixed_end: int,
@@ -31,6 +31,7 @@ class ShortTermModel:
             parameters: TabulatedParameterHolder,
             previous_solution: List,
             previous_cplex_ids: CplexIds,
+            stage_names: Tuple[str],
             df_transfers: pd.DataFrame,
             dc_shifts_from: Dict,
             dc_shifts_to: Dict,
@@ -38,20 +39,19 @@ class ShortTermModel:
             ls_shift_kinds: List,
             dc_contract_modalities_for_shift_name: Dict,
             dc_contract_types_and_modalities: Dict,
-            dc_modalities_and_contract_types: Dict,
             dc_shift_names_per_contract_modality: Dict
     ) -> None:
 
-        self.cpx: cplex.Cplex = cpx
-        self.dh: DataHolder = data_holder
-        self.sh: ShiftParametersGenerator = shift_params
-        self.process: Process = process
+        self.cpx = cpx
+        self.dh = dh
+        self.sh: ShiftHolder = sh
+        self.process = process
         self.start: int = start
-        self.rolling_fixed_end: int = rolling_fixed_end
+        self.rolling_fixed_end = rolling_fixed_end
         self.end: int = end
         self.global_max_epoch: int = processing_max_epoch
-        self.stages: int = stages  # the number of stages. TODO: it is redundant, we may count the stages names.
-        self.stage_names: Tuple[str] = self.dh.stage_names
+        self.stages: int = stages  # the number of stages
+        self.stage_names: Tuple[str] = stage_names
 
         # BasicModel.previous_made_output comes into ShortTermModel.rolled_boundaries
         self.rolled_boundaries = rolled_boundary_values.processed
@@ -63,14 +63,14 @@ class ShortTermModel:
         self.initial_backlog_cpts = [c for j, c in self.dh.initial.keys()]
 
         # vars
-        self.v_shift_assigned_per_modality = dict()  # stage--specialized staff at stage j and SHIFT number s
-        self.xt = dict()  # xt_j_s_t: stage--specialized staff at stage j, and shift s, and SLOT t
+        self.v_perms_shift_assigned = {}  # stage--specialized staff at stage j and SHIFT number s
+        self.xt = {}  # xt_j_s_t: stage--specialized staff at stage j, and shift s, and SLOT t
 
-        self.v_total_shift_assigned_per_modality = {}  # total staff assigned at stage j and SHIFT number s (aka z per shift)
+        self.v_total_perms_shift_assigned = {}  # total staff assigned at stage j and SHIFT number s (aka z per shift)
         self.zt = {}  # zt_j_s_t: total staff assigned at stage j, and shift s, and SLOT t
 
         # The following paragraph of vars has the 'reps evolution' model variables
-        self.v_available_workers_quantity: Dict = {}  # indexed per stage and kind
+        self.v_available_workers_quantity: Dict = {}  # indexed per stage and kind.name
         self.v_hired_workers_quantity: Dict = {}
         self.v_dismissed_workers_quantity: Dict = {}
         self.v_transferred_workers_quantity: Dict = {}
@@ -91,7 +91,6 @@ class ShortTermModel:
         # TODO: check if we declared only the vars with modalities per shift_name
         self.dc_contract_modalities_for_shift_name: Dict = dc_contract_modalities_for_shift_name
         self.dc_contract_types_and_modalities: Dict = dc_contract_types_and_modalities
-        self.dc_modalities_and_contract_types: Dict = dc_modalities_and_contract_types
         self.dc_shift_names_per_contract_modality: Dict = dc_shift_names_per_contract_modality
         self.dict_initial_backlog = {}
         self.min_stage_for_cpt = self.dh.min_stages_for_cpts()
@@ -115,79 +114,77 @@ class ShortTermModel:
             self.max_wrkrs_per_shift_kind[kind] = m_s[0]
 
     def declare_workers(self):
-        for j in range(self.stages):
-            shift_assigned_per_modality_j = {}
-            total_shift_assigned_per_modality_j = {}
-            self.v_shift_assigned_per_modality[j] = shift_assigned_per_modality_j
-            self.v_total_shift_assigned_per_modality[j] = total_shift_assigned_per_modality_j  # totals
+        for modalities in self.dc_contract_types_and_modalities.values():
+            for modality in modalities:
+                self.v_perms_shift_assigned[modality] = {}
+                self.v_total_perms_shift_assigned[modality] = {}  # totals
 
-            xt_j = {}
-            zt_j = {}
-            self.xt[j] = xt_j
-            self.zt[j] = zt_j
+                self.xt[modality] = {}
+                self.zt[modality] = {}
+                perms_shift_assigned_modality = self.v_perms_shift_assigned[modality]
+                total_perms_shift_assigned_modality = self.v_total_perms_shift_assigned[modality]
+                xt_modality = self.xt[modality]
+                zt_modality = self.zt[modality]
+                for j in range(self.stages):
+                    # While less performant, this is much readable.
 
-            for shift in self.sh.shifts_for_epoch_range(self.start, self.end):
-                shift_assigned_per_modality_js = {}
-                total_shift_assigned_per_modality_js = {}  # totals
+                    # workers per shift
+                    # permanent
+                    perms_shift_assigned_modality[j] = {}
+                    perms_shift_assigned_modality_j = perms_shift_assigned_modality[j]
+                    total_perms_shift_assigned_modality[j] = {}  # totals
+                    total_perms_shift_assigned_modality_j = total_perms_shift_assigned_modality[j]
 
-                xt_js = {}
-                zt_js = {}
-                shift_assigned_per_modality_j[shift] = shift_assigned_per_modality_js
-                total_shift_assigned_per_modality_j[shift] = total_shift_assigned_per_modality_js
-                xt_j[shift] = xt_js
-                zt_j[shift] = zt_js
+                    # workers per hour
+                    # permanent
+                    xt_modality[j] = {}
+                    xt_modality_j = xt_modality[j]
+                    zt_modality[j] = {}  # totals
+                    zt_modality_j = zt_modality[j]
 
-                for modality in self.sh.dc_modalities_by_shift_idx[shift]:
-                    max_x = self.parameters.max_workers_x(modality, j, shift)
-                    max_z = self.parameters.max_workers_x(modality, j, shift)
+                    for shift in self.sh.shifts_for_epoch_range(self.start, self.end):
+                        max_x = self.parameters.max_workers_x(modality, j, shift)
+                        max_z = self.parameters.max_workers_x(modality, j, shift)
 
-                    xjs = self.cpx.variables.add(
-                        lb=[0],
-                        ub=[max_x],
-                        types=['C'],
-                        names=['v_perms_shift_assigned_%s_%s_%d_%d' % (self.process.name[0:3], modality, j, shift)]
-                    )
-                    shift_assigned_per_modality_js[modality] = xjs[0]
-                    xt_jsm = {}
-                    xt_js[modality] = xt_jsm
-
-                    modality_type = self.dc_modalities_and_contract_types[modality][0]
-
-                    z_obj_coeff = 0
-                    if fld_names.DAILY_MODALITY == modality_type.lower():
-                        shift_name = self.sh.get_shift_name(shift)
-                        z_obj_coeff = self.sh.get_cost(shift_name, modality, fld_names.UNITARY_COST)
-
-                    zjs = self.cpx.variables.add(
-                        obj=[z_obj_coeff],
-                        lb=[0],
-                        ub=[max_z],
-                        types=['C'],
-                        names=['v_total_shift_assigned_per_modality_%s_%s_%d_%d' % (
-                            self.process.name[0:3], modality, j, shift)]
-                    )
-                    total_shift_assigned_per_modality_js[modality] = zjs[0]
-                    zt_jsm = {}
-                    zt_js[modality] = zt_jsm
-
-                    epochs_scope = self.sh.epochs_for_shift[shift][self.sh.epochs_for_shift[shift] <= self.end]
-
-                    for epoch in epochs_scope:
-                        xjst = self.cpx.variables.add(
+                        xjs = self.cpx.variables.add(
                             lb=[0],
                             ub=[max_x],
                             types=['C'],
-                            names=['xt_%s_%s_%d_%s_%d' % (self.process.name[0:3], modality, j, shift, epoch)]
+                            names=['v_perms_shift_assigned_%s_%s_%d_%d' % (self.process.name[0:3], modality, j, shift)]
                         )
-                        xt_jsm[epoch] = xjst[0]
+                        perms_shift_assigned_modality_j[shift] = xjs[0]
+                        xt_modality_j[shift] = {}
+                        xt_modality_j_shift = xt_modality_j[shift]
 
-                        zjst = self.cpx.variables.add(
+                        zjs = self.cpx.variables.add(
                             lb=[0],
                             ub=[max_z],
                             types=['C'],
-                            names=['zt_%s_%s_%d_%s_%d' % (self.process.name[0:3], modality, j, shift, epoch)]
+                            names=['v_total_perms_shift_assigned_%s_%s_%d_%d' % (
+                                self.process.name[0:3], modality, j, shift)]
                         )
-                        zt_jsm[epoch] = zjst[0]
+                        total_perms_shift_assigned_modality_j[shift] = zjs[0]
+                        zt_modality_j[shift] = {}
+                        zt_modality_j_shift = zt_modality_j[shift]
+
+                        epochs_scope = self.sh.epochs_for_shift[shift][self.sh.epochs_for_shift[shift] <= self.end]
+
+                        for epoch in epochs_scope:
+                            xjst = self.cpx.variables.add(
+                                lb=[0],
+                                ub=[max_x],
+                                types=['C'],
+                                names=['xt_%s_%s_%d_%s_%d' % (self.process.name[0:3], modality, j, shift, epoch)]
+                            )
+                            xt_modality_j_shift[epoch] = xjst[0]
+
+                            zjst = self.cpx.variables.add(
+                                lb=[0],
+                                ub=[max_z],
+                                types=['C'],
+                                names=['zt_%s_%s_%d_%s_%d' % (self.process.name[0:3], modality, j, shift, epoch)]
+                            )
+                            zt_modality_j_shift[epoch] = zjst[0]
 
     def declare_items(self):
         # Declaration of items variables
@@ -275,7 +272,7 @@ class ShortTermModel:
             modality: {
                 stage: {
                     sh_name: self.cpx.variables.add(
-                        obj=[self.sh.get_cost(sh_name, modality, fld_names.HIRING_COST)],
+                        obj=[self.sh.get_cost(ShiftKind[sh_name], fld_names.HIRING_COST)],
                         types=["C"],
                         names=[f"v_hired_workers_quantity_{modality}_{self.stage_names[stage]}_{sh_name}"]
                     )[0] for sh_name in self.dc_shift_names_per_contract_modality[modality]
@@ -288,7 +285,7 @@ class ShortTermModel:
             modality: {
                 stage: {
                     sh_name: self.cpx.variables.add(
-                        obj=[self.sh.get_cost(sh_name, modality, fld_names.DISMISSAL_COST)],
+                        obj=[self.sh.get_cost(ShiftKind[sh_name], fld_names.DISMISSAL_COST)],
                         types=["C"],
                         names=[f"v_dismissed_workers_quantity_{modality}_{self.stage_names[stage]}_{sh_name}"]
                     )[0]
@@ -336,7 +333,7 @@ class ShortTermModel:
             qnt_workers_available(sk-1,j)  | (week > first week)
         """
         for j in range(self.stages):
-            for shift_type, shift_names in self.sh.dc_partial_order_of_shifts.items():
+            for shift_type, shift_names in self.sh.mapper.dc_partial_order_of_shifts.items():
                 # That is: shift.TabulatedShiftMapper.dc_partial_order_of_shifts
                 for n in range(len(shift_names)):
                     for modality in self.dc_contract_modalities_for_shift_name[shift_names[n]]:
@@ -381,58 +378,27 @@ class ShortTermModel:
                             names=[f"c_reps_evolution_{modality}_{self.stage_names[j]}_{shift_names[n]}"]
                         )
 
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'modality': modality,
-                                              'stage': self.stage_names[j],
-                                              'shift': shift_names[n]}
-                                             for j in range(self.stages)
-                                             for shift_type, shift_names in
-                                             self.sh.mapper.dc_partial_order_of_shifts.items()
-                                             for n in range(len(shift_names))
-                                             for modality in
-                                             self.dc_contract_modalities_for_shift_name[shift_names[n]]])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_reps_evolution', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
-
     def set_total_permanents_equalities(self):
-        for j in range(self.stages):
-            for shift_idx in self.sh.shifts_for_epoch_range(self.start, self.end):
-                shift_name = self.sh.get_shift_name(shift_idx)
-                for modality in self.sh.dc_modalities_by_shift_idx[shift_idx]:
-                    indices = [self.v_available_workers_quantity[modality][j][shift_name],
-                               self.v_total_shift_assigned_per_modality[j][shift_idx][modality]]
+        for modalities in self.dc_contract_types_and_modalities.values():
+            for modality in modalities:
+                for j in range(self.stages):
+                    for shift_idx in self.sh.shifts_for_epoch_range(self.start, self.end):
+                        shift_name = self.sh.get_shifts(shift_idx).kind.name
+                        indices = [self.v_available_workers_quantity[modality][j][shift_name],
+                                   self.v_total_perms_shift_assigned[modality][j][shift_idx]]
 
-                    self.cpx.linear_constraints.add(
-                        lin_expr=[cplex.SparsePair(ind=indices, val=[1, -1])],
-                        senses=['E'],
-                        rhs=[0],
-                        names=[f"c_total_permanents_equalities"
-                               f"_{modality}"
-                               f"_{self.stage_names[j]}"
-                               f"_{shift_name}"
-                               f"_{shift_idx}"]
-                    )
-
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'modality': modality,
-                                              'stage': self.stage_names[j],
-                                              'shift_kind': self.sh.get_shift_name(shift_idx),
-                                              'shift_idx': shift_idx, }
-                                             for j in range(self.stages)
-                                             for shift_idx in self.sh.shifts_for_epoch_range(self.start, self.end)
-                                             for modalities in self.dc_contract_types_and_modalities.values()
-                                             for modality in modalities])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_total_permanents_equalities', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
+                        self.cpx.linear_constraints.add(
+                            lin_expr=[cplex.SparsePair(ind=indices, val=[1, -1])],
+                            senses=['E'],
+                            rhs=[0],
+                            names=[f"c_total_permanents_equalities"
+                                   f"_{modality}"
+                                   f"_{self.stage_names[j]}"
+                                   f"_{shift_name}"
+                                   f"_{shift_idx}"]
+                        )
 
     def declare_and_constraint_stock_variables(self):
-        list_indexes = []
         cpts = [cpt for cpt in self.dh.cpts_for_epoch_range(self.start, self.end) if cpt <= self.end]
         for cpt in cpts:
 
@@ -481,19 +447,6 @@ class ShortTermModel:
                             rhs=[0],
                             names=[f"c_stock_def_{self.process.name[0:3]}_{cpt}_{j}_{epoch}"]
                         )
-                        list_indexes.append({
-                            "process": self.process.name[0:3],
-                            "cpt": cpt,
-                            "stage": j,
-                            "epoch": epoch
-                        })
-
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records(list_indexes)
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_total_permanents_equalities', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
 
     def set_optimal_permanent_reps_values(self) -> None:
         # Here we set and fix the values of perm reps found in the previous run.
@@ -503,129 +456,105 @@ class ShortTermModel:
         list_indices_fix_hr_perms = []
         list_indices_fix_hr_total_perms = []
 
-        for shift in self.sh.shifts_for_epoch_range(self.start, self.end):
-            for modality in self.sh.dc_modalities_by_shift_idx[shift]:
-                epochs_scope = self.sh.epochs_for_shift[shift][self.sh.epochs_for_shift[shift] <= self.end]
+        for modalities in self.dc_contract_types_and_modalities.values():
+            for modality in modalities:
+                for shift in self.sh.shifts_for_epoch_range(self.start, self.end):
+                    epochs_scope = self.sh.epochs_for_shift[shift][self.sh.epochs_for_shift[shift] <= self.end]
 
-                for j in range(self.stages):
+                    for j in range(self.stages):
 
-                    opt_val_x = self.previous_cplex_solution_list[
-                        self.previous_cplex_ids.dc_x_fixed[j][shift][modality]]
-
-                    opt_val_z = self.previous_cplex_solution_list[
-                        self.previous_cplex_ids.dc_z_fixed[j][shift][modality]]
-
-                    self.cpx.linear_constraints.add(
-                        lin_expr=[cplex.SparsePair(ind=[self.v_shift_assigned_per_modality[j][shift][modality]], val=[1])],
-                        senses=['E'],
-                        rhs=[opt_val_x],
-                        names=[f"c_fix_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}"]
-                    )
-                    list_indices_fix_perms.append({
-                        "process": self.process.name[0:3],
-                        "modality": modality,
-                        "stage": j,
-                        "shift": shift
-                    })
-
-                    self.cpx.linear_constraints.add(
-                        lin_expr=[
-                            cplex.SparsePair(ind=[self.v_total_shift_assigned_per_modality[j][shift][modality]], val=[1])],
-                        senses=['E'],
-                        rhs=[opt_val_z],
-                        names=[f"c_fix_total_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}"]
-                    )
-                    list_indices_fix_total_perms.append({
-                        "process": self.process.name[0:3],
-                        "modality": modality,
-                        "stage": j,
-                        "shift": shift
-                    })
-
-                    for epoch in epochs_scope:
                         opt_val_x = self.previous_cplex_solution_list[
-                            self.previous_cplex_ids.dc_xt_fixed[j][shift][modality][epoch]]
+                            self.previous_cplex_ids.dc_x_fixed[modality][j][shift]]
 
                         opt_val_z = self.previous_cplex_solution_list[
-                            self.previous_cplex_ids.dc_zt_fixed[j][shift][modality][epoch]]
+                            self.previous_cplex_ids.dc_z_fixed[modality][j][shift]]
 
                         self.cpx.linear_constraints.add(
-                            lin_expr=[cplex.SparsePair(ind=[self.xt[j][shift][modality][epoch]], val=[1])],
+                            lin_expr=[cplex.SparsePair(ind=[self.v_perms_shift_assigned[modality][j][shift]], val=[1])],
                             senses=['E'],
                             rhs=[opt_val_x],
-                            names=[f"c_fix_hr_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}_{epoch}"]
+                            names=[f"c_fix_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}"]
                         )
-
-                        list_indices_fix_hr_perms.append({
+                        list_indices_fix_perms.append({
                             "process": self.process.name[0:3],
                             "modality": modality,
                             "stage": j,
-                            "shift": shift,
-                            "epoch": epoch
+                            "shift": shift
                         })
 
                         self.cpx.linear_constraints.add(
-                            lin_expr=[cplex.SparsePair(ind=[self.zt[j][shift][modality][epoch]], val=[1])],
+                            lin_expr=[
+                                cplex.SparsePair(ind=[self.v_total_perms_shift_assigned[modality][j][shift]], val=[1])],
                             senses=['E'],
                             rhs=[opt_val_z],
-                            names=[f"c_fix_hr_total_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}_{epoch}"]
+                            names=[f"c_fix_total_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}"]
                         )
-
-                        list_indices_fix_hr_total_perms.append({
+                        list_indices_fix_total_perms.append({
                             "process": self.process.name[0:3],
                             "modality": modality,
                             "stage": j,
-                            "shift": shift,
-                            "epoch": epoch
+                            "shift": shift
                         })
 
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            with_name = {"constraint_fix_hr_total_perms": list_indices_fix_hr_total_perms,
-                         "constraint_fix_hr_perms": list_indices_fix_hr_perms,
-                         "constraint_fix_perms": list_indices_fix_perms,
-                         "constraint_fix_total_perms": list_indices_fix_total_perms}
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            for name, indexes in iter(with_name.items()):
-                raw = pd.DataFrame.from_records(indexes)
-                raw.to_sql(name=name, con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
+                        for epoch in epochs_scope:
+                            opt_val_x = self.previous_cplex_solution_list[
+                                self.previous_cplex_ids.dc_xt_fixed[modality][j][shift][epoch]]
+
+                            opt_val_z = self.previous_cplex_solution_list[
+                                self.previous_cplex_ids.dc_zt_fixed[modality][j][shift][epoch]]
+
+                            self.cpx.linear_constraints.add(
+                                lin_expr=[cplex.SparsePair(ind=[self.xt[modality][j][shift][epoch]], val=[1])],
+                                senses=['E'],
+                                rhs=[opt_val_x],
+                                names=[f"c_fix_hr_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}_{epoch}"]
+                            )
+
+                            list_indices_fix_hr_perms.append({
+                                "process": self.process.name[0:3],
+                                "modality": modality,
+                                "stage": j,
+                                "shift": shift,
+                                "epoch": epoch
+                            })
+
+                            self.cpx.linear_constraints.add(
+                                lin_expr=[cplex.SparsePair(ind=[self.zt[modality][j][shift][epoch]], val=[1])],
+                                senses=['E'],
+                                rhs=[opt_val_z],
+                                names=[f"c_fix_hr_total_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}_{epoch}"]
+                            )
+
+                            list_indices_fix_hr_total_perms.append({
+                                "process": self.process.name[0:3],
+                                "modality": modality,
+                                "stage": j,
+                                "shift": shift,
+                                "epoch": epoch
+                            })
 
     def set_stock_objective_constraints(self):
         # This is a space to experiment with objective functions to anticipate backlog
         pass
 
     def set_available_reps_natural_constraint(self):
-        for stage in range(self.stages):
-            for shift in self.sh.shifts_for_epoch_range(self.start, self.end):
-                kind_name = self.sh.get_shift_name(shift)
-                for modality in self.sh.dc_modalities_by_shift_idx[shift]:
-                    indices = [self.v_shift_assigned_per_modality[stage][shift][modality],
-                               self.v_available_workers_quantity[modality][stage][kind_name]]
-                    self.cpx.linear_constraints.add(
-                        lin_expr=[cplex.SparsePair(ind=indices, val=[1, -1])],
-                        senses=['L'],
-                        rhs=[0],
-                        names=[f"c_available_reps_natural_constraint_"
-                               f"{self.process.name[0:3]}_"
-                               f"{modality}_"
-                               f"{self.stage_names[stage]}_"
-                               f"{shift}"]
-                    )
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'modality': modality,
-                                              'stage': self.stage_names[stage],
-                                              'process': self.process.name[0:3],
-                                              'shift': shift}
-                                             for shift in self.sh.shifts_for_epoch_range(self.start, self.end)
-                                             for stage in range(self.stages)
-                                             for modalities in self.dc_contract_types_and_modalities.values()
-                                             for modality in modalities])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_available_reps_natural', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
+        for modalities in self.dc_contract_types_and_modalities.values():
+            for modality in modalities:
+                for stage in range(self.stages):
+                    for shift in self.sh.shifts_for_epoch_range(self.start, self.end):
+                        kind_name = self.sh.get_shifts(shift).kind.name
+                        indices = [self.v_perms_shift_assigned[modality][stage][shift],
+                                   self.v_available_workers_quantity[modality][stage][kind_name]]
+                        self.cpx.linear_constraints.add(
+                            lin_expr=[cplex.SparsePair(ind=indices, val=[1, -1])],
+                            senses=['L'],
+                            rhs=[0],
+                            names=[f"c_available_reps_natural_constraint_"
+                                   f"{self.process.name[0:3]}_"
+                                   f"{modality}_"
+                                   f"{self.stage_names[stage]}_"
+                                   f"{shift}"]
+                        )
 
     def set_inner_constraints(self):
         # TODO optimize this function
@@ -640,59 +569,59 @@ class ShortTermModel:
 
                     for c in cpt_list:
                         if t == 0 and j == 0:
-
+    
                             # b_c_0_0 == demand_{t=0, c} + initial_demand_{j=0, c}
-
+    
                             indices = [self.b[c][j][t]]
                             values = [1]
                             right_hand = self.dh.demand.get((t, c), 0) + self.dict_initial_backlog[(c, j)]
-
+    
                         elif t == 0 and j > 0:
-
+    
                             # b_c_j_0 - y_c_{j-1}_0 = initial_demand_{c, j}
-
+    
                             if self.y[c].get(j - 1):
                                 indices = [self.b[c][j][t], self.y[c][j - 1][0]]
                                 values = [1, -1]
-
+    
                             else:
                                 indices = [self.b[c][j][t]]
                                 values = [1]
-
+    
                             right_hand = self.dict_initial_backlog[(c, j)]
-
+    
                         elif t > 0 and j == 0:
-
+    
                             # b_c_0_t - b_c_0_{t-1} + y_c_0_{t-1} = demand_{t, c}
-
+    
                             if self.b[c][j].get(t - 1):
                                 indices = [self.b[c][j][t], self.b[c][0][t - 1], self.y[c][0][t - 1]]
                                 values = [1, -1, 1]
-
+    
                             else:
                                 indices = [self.b[c][0][t]]
                                 values = [1]
-
+    
                             right_hand = self.dh.demand.get((t, c), 0)
-
+    
                         else:  # t > 0 and j > 0
-
+    
                             # b_c_j_t - b_c_j_{t-1} + y_c_j_{t-1} - y_c_{j-1}_t = 0
-
+    
                             if self.b[c][j].get(t - 1):
                                 indices = [self.b[c][j][t], self.b[c][j][t - 1], self.y[c][j][t - 1]]
                                 values = [1, -1, 1]
-
+    
                             else:
                                 indices = [self.b[c][j][t]]
                                 values = [1]
-
+    
                             if self.min_stage_for_cpt[c] <= j - 1:
                                 indices += [self.y[c][j - 1][t]]
                                 values += [-1]
-
+    
                             right_hand = 0
-
+    
                         self.cpx.linear_constraints.add(
                             lin_expr=[cplex.SparsePair(ind=indices, val=values)],
                             senses=['E'],
@@ -755,107 +684,38 @@ class ShortTermModel:
 
                 for t in epochs_scope:
                     # TODO: documentr restr
-                    for modality in self.sh.dc_modalities_by_shift_idx[s]:
-                        self.cpx.linear_constraints.add(
-                            lin_expr=[cplex.SparsePair(
-                                ind=[self.xt[j][s][modality][t], self.v_shift_assigned_per_modality[j][s][modality]],
-                                val=[1, -self.parameters.presence_rate(modality, t, s) *
-                                     self.parameters.absence_rate(modality, t, s)])],
-                            senses=['L'],
-                            rhs=[0],
-                            names=[f"c_perms_presenteeism_{self.process.name[0:3]}_{modality}_{j}_{s}_{t}"]
-                        )
-                        # TODO: documentr restr
-                        self.cpx.linear_constraints.add(
-                            lin_expr=[cplex.SparsePair(
-                                ind=[self.zt[j][s][modality][t], self.v_total_shift_assigned_per_modality[j][s][modality]],
-                                val=[1, -1])],
-                            senses=['E'],
-                            rhs=[0],
-                            names=[f"c_z_totals_per_hour_{self.process.name[0:3]}_{modality}_{j}_{s}_{t}"]
-                        )
+                    for m in self.dc_contract_types_and_modalities:
+                        for modality in self.dc_contract_types_and_modalities[m]:
+                            self.cpx.linear_constraints.add(
+                                lin_expr=[cplex.SparsePair(
+                                    ind=[self.xt[modality][j][s][t], self.v_perms_shift_assigned[modality][j][s]],
+                                    val=[1, -self.parameters.presence_rate(modality, t, s) *
+                                         self.parameters.absence_rate(modality, t, s)])],
+                                senses=['L'],
+                                rhs=[0],
+                                names=[f"c_perms_presenteeism_{self.process.name[0:3]}_{modality}_{j}_{s}_{t}"]
+                            )
+                            # TODO: documentr restr
+                            self.cpx.linear_constraints.add(
+                                lin_expr=[cplex.SparsePair(
+                                    ind=[self.zt[modality][j][s][t], self.v_total_perms_shift_assigned[modality][j][s]],
+                                    val=[1, -1])],
+                                senses=['E'],
+                                rhs=[0],
+                                names=[f"c_z_totals_per_hour_{self.process.name[0:3]}_{modality}_{j}_{s}_{t}"]
+                            )
 
         # surplus equal to zero, to conform to CPTs
         for j in range(self.stages):
             for c in filter(lambda _: _ <= self.global_max_epoch + 1 and self.min_stage_for_cpt[_] <= j,
                             self.b.keys()):
                 # TODO: Document restr
-                try:
-                    self.cpx.linear_constraints.add(
-                        lin_expr=[cplex.SparsePair(ind=[self.b[c][j][c - 1], self.y[c][j][c - 1]], val=[1, -1])],
-                        senses=['E'],
-                        rhs=[0],
-                        names=[f"c_zero_surplus_{self.process.name[0:3]}_{c}_{j}"]
-                    )
-                except KeyError:
-                    logger.error("%s j = %d, c = %d\n" % (self.process.name, j, c))
-
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            backlog = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'cpt': int(c),
-                'stage': self.stage_names[j],
-                'epoch': int(t)}
-                for t in range(max(0, self.start - 1), self.end + 1)
-                for j in range(self.stages)
-                for c in
-                [c for c in self.dh.dict_cpts_for_epoch[t] if c <= self.end and self.min_stage_for_cpt[c] <= j]
-            ])
-
-            max_processing = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'cpt': int(c),
-                'stage': self.stage_names[stage]}
-                for stage in range(self.stages)
-                for c in
-                [cpt for cpt in self.dh.cpts_for_epoch_range(self.start, self.end) if
-                 1 == self.min_stage_for_cpt[cpt]]
-            ])
-
-            ylim = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'cpt': int(c),
-                'epoch': t,
-                'stage': self.stage_names[stage]}
-                for t in range(self.start, self.end + 1)
-                for stage in range(self.stages)
-                for c in [c for c in self.dh.dict_cpts_for_epoch[t]
-                          if c <= self.end and self.min_stage_for_cpt[c] <= stage]
-            ])
-
-            perms_presenteeism = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'modality': modality,
-                'cpt': int(c),
-                'epoch': t,
-                'stage': self.stage_names[stage]}
-                for t in range(self.start, self.end + 1)
-                for stage in range(self.stages)
-                for c in [c for c in self.dh.dict_cpts_for_epoch[t] if c <= self.end and self.min_stage_for_cpt[c] <= stage]
-                for m in self.dc_contract_types_and_modalities
-                for modality in self.dc_contract_types_and_modalities[m]
-            ])
-
-            zero_surplus = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'cpt': int(c),
-                'stage': self.stage_names[stage]}
-                for stage in range(self.stages)
-                for c in
-                filter(lambda _: _ <= self.global_max_epoch + 1 and self.min_stage_for_cpt[_] <= stage,
-                       self.b.keys())
-            ])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            backlog.to_sql(name='constraint_backlog', con=con, if_exists='replace', index=False)
-            if not max_processing.empty:
-                max_processing.to_sql(name='constraint_max_processing', con=con, if_exists='replace', index=False)
-            ylim.to_sql(name='constraint_ylim', con=con, if_exists='replace', index=False)
-            perms_presenteeism.to_sql(name='constraint_z_totals_per_hour', con=con, if_exists='replace', index=False)
-            perms_presenteeism.to_sql(name='constraint_perms_presenteeism', con=con, if_exists='replace', index=False)
-            zero_surplus.to_sql(name='constraint_zero_surplus', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
+                self.cpx.linear_constraints.add(
+                    lin_expr=[cplex.SparsePair(ind=[self.b[c][j][c - 1], self.y[c][j][c - 1]], val=[1, -1])],
+                    senses=['E'],
+                    rhs=[0],
+                    names=[f"c_zero_surplus_{self.process.name[0:3]}_{c}_{j}"]
+                )
 
     def bound_backlogs_by_above(self):
         self.bound_backlogs(self.parameters.backlogs_upper_bounds, 'L', 'c_backlog_upbound')
@@ -885,17 +745,3 @@ class ShortTermModel:
                             rhs=[bound],
                             names=[f"{constraint_name}_{self.process.name[0:3]}_{j}_{shift}_{t}"]
                         )
-
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'epoch': t,
-                                              'stage': self.stage_names[j],
-                                              'process': self.process.name[0:3],
-                                              'shift': shift}
-                                             for t in range(self.start, self.end + 1)
-                                             for j in range(1, self.stages)
-                                             for shift in self.sh.shifts_for_epoch.get(t, [])])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_' + constraint_name, con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()

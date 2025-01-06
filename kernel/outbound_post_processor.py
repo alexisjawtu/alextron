@@ -1,7 +1,8 @@
 import pandas as pd
+from kernel.formulation.formulation import PostProcessor
 
 
-class OutboundPostProcessor:
+class OutboundPostProcessor(PostProcessor):
     def __init__(self, data_holder):
         self.output: pd.DataFrame = None
         self.data = None

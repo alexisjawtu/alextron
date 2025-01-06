@@ -1,20 +1,15 @@
 import numpy as np
 import pandas as pd
-import logging
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Tuple, List, Dict, Any, Callable
+from typing import Tuple, List, Dict, Any
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.data.shift_parameters import ShiftParametersGenerator
-from sot_fbm_staffing.general_configurations import FileNames
-
+from kernel.data.shift import TabulatedShiftMapper, Shift, ShiftKind
 
 day_names = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat', 6: 'Sun'}
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 
 @dataclass
@@ -43,13 +38,118 @@ class Process(Enum):
     OUTBOUND = 1
 
 
+class ShiftHolder:
+    def __init__(self, df: pd.DataFrame, mapper: TabulatedShiftMapper) -> None:
+        self.mapper = mapper
+
+        self.shifts_df = df.sort_values('handling_ts')
+
+        self.shifts_df['shift_idx'] = self.shifts_df.groupby(['calendar_reference_day', 'kind_value']).ngroup()
+
+        # with the generality of shifts achieved, the shift with greatest index is not 
+        # neccessarily the shift that ends last
+        # TODO hacer un miembro aca que sea shift_that_ends_the_last =
+
+        self.shifts = self.shifts_df['shift_idx'].unique()
+
+        # TODO: guarantee to sort the following aggregated list
+        self.shifts_for_epoch = self.shifts_df.groupby('idx')['shift_idx'].agg(list).to_dict()
+        # TODO: guarantee to sort the following aggregated list
+        self.epochs_for_shift = self.shifts_df.sort_values(['idx']).groupby('shift_idx')['idx'] \
+            .unique().to_dict()
+
+        self.df_workers_costs: pd.DataFrame = pd.DataFrame()
+
+
+    def get_shifts(self, s: int) -> Shift:
+        # This requires a shift number and returns it's Shift instance.
+        return self.shifts_df.query("shift_idx == @s")["shifts_for_ts"].iloc[0]
+
+    def get_shift_name(self, s: int) -> str:
+        return self.get_shifts(s).kind.name
+
+    def shifts_for_epoch_range(self, start: int, end: int) -> List:
+        data = self.shifts_df.query('@start <= idx <= @end and shift_idx >= 0')['shift_idx'].sort_values().unique()
+        return [int(s) for s in data]
+
+    def get_cost(self, kind: ShiftKind, cost_name: str) -> float:
+        """
+        READ THIS:
+
+        We put this getter here because we need the costs to be accessible in 
+        both ShorTermFormulation and in ShorTermModel and there are not 
+        many better options due to an over-designed architechture.
+        For the same reason we have df_workers_costs.
+
+        cost_name is HIRING_COST, DISMISSAL_COST, and so on.
+
+        """
+
+        # The following query is split in several lines to serve as an example of how
+        # the intermediate steps work in a DataFrame object.
+        bool_mask = self.df_workers_costs[fld_names.SHIFT_NAME] == kind.name
+
+        if bool_mask.any():
+            one_row_df = self.df_workers_costs[bool_mask]
+
+            series = one_row_df[cost_name]  # requesting a column gives a Series, not a DataFrame.
+
+            cost = series.loc[one_row_df.index.min()]  # the first index is the only index.
+
+        else:
+            logger.warning("No specified cost for %s, we will use the value 1 and the instance will keep running. "
+                           "Maybe you forgot to put it in file %s.\n", kind.name, FileNames.WORKERS_COSTS)
+            cost = 1
+
+        return float(cost)
+
+
+class IntervalShiftHolder(ShiftHolder):
+    def __init__(
+            self,
+            start: pd.Timestamp,
+            end: pd.Timestamp,
+            interval: pd.Timedelta,
+            mapper: TabulatedShiftMapper,
+            index_handling_bijection: pd.DataFrame
+    ) -> None:
+        # TODO: all the ShiftHolder thing maybe goes within the ShiftMapper and
+        # put an inclusive name
+
+        # TODO: this algorithm goes in class TabulatedShiftMapper
+        # and we will construct the whole table within de mapper
+        records = []
+        ts = start
+        idx = 0
+
+        while ts <= end:
+            s = mapper.map_shifts(ts)
+            # This is the df for ShiftHolder.shifts_df
+            records += [{'work_day_name': c,
+                         'handling_ts': ts,
+                         'idx': idx,
+                         'shifts_for_ts': a,
+                         'calendar_reference_day': pd.Timestamp(ts.year, ts.month, ts.day) - pd.Timedelta(days=b),
+                         'kind_value': a.kind.value,
+                         'shift_name': a.kind.name,
+                         'is_scheduled': 0}
+                        for a, b, c in s]
+
+            idx += 1
+            ts += interval
+
+        df = pd.DataFrame.from_records(records)
+        df = mapper.map_scheduled_shifts(df, index_handling_bijection)
+
+        ShiftHolder.__init__(self, df, mapper)
+
+
 class DataHolder:
     def __init__(
             self,
             df: pd.DataFrame,
             process: Process,
             stages: int,
-            stage_names: Dict,
             max_epoch_id: int,
             initial: Dict = {}
     ) -> None:
@@ -57,7 +157,7 @@ class DataHolder:
         self.df: pd.DataFrame = df
         self.initial: Dict[tuple, int] = initial
         self.stages: int = stages
-        self.stage_names = stage_names
+
         self.cpt_fld = DataHolder.cpt_field(process)
 
         self.cpts = sorted(self.df[self.cpt_fld].unique())
@@ -121,7 +221,7 @@ class TabulatedParameterHolder:
     def __init__(
             self,
             process_name: str,
-            shift_params: ShiftParametersGenerator,
+            shift_holder: ShiftHolder,
             backlog_bounds: pd.DataFrame,
             process_workers_full_table: pd.DataFrame,
             polyvalents_parameters: pd.DataFrame,
@@ -135,27 +235,21 @@ class TabulatedParameterHolder:
     ) -> None:
 
         self.process_name = process_name
-        self.shift_params = shift_params
-
-        self.coefficients_table = shift_params.shifts_df.copy()
-
-        self.fractions = dict()
-
+        self.shift_holder = shift_holder
+        self.coefficients_table = shift_holder.shifts_df.copy()
         self.backlog_bounds = backlog_bounds
 
         self.process_workers_full_table = process_workers_full_table
-        self.polyvalents_parameters = shift_params.polyvalents_parameters
+        self.polyvalents_parameters = polyvalents_parameters
+
         self.raw_shifts = raw_shifts
         self.presence_coefs_raw = presence_coefs_raw
         self.presence_coefs_sched = presence_coefs_sched
 
-        self.presence_rate: Callable = None
-
         self.absence_table = absence_table
         self.absence_table_scheduling = absence_table_scheduling
 
-        self.get_absence_rate_aux: Callable = None
-        self.get_presence_ratio_aux: Callable = None
+        self.get_absence_rate_aux = None
 
         self.hourly_workers_cost: float = hourly_workers_cost
         self.hourly_work_force: float = hourly_work_force
@@ -165,50 +259,13 @@ class TabulatedParameterHolder:
         self.back_lower_bounds = {}
 
         self.switch_getter_for_absence_rates()
-        self.switch_getter_for_presence_ratios()
         self.set_backlog_bounds()
-        self.make_ratios_for_fractional_hours()
-
-    def make_ratios_for_fractional_hours(self) -> None:
-        """
-        Here we construct the numbers to use the criterion according to which
-
-            handling == 07:24  ==>  q := 0.4
-
-        to handle the case of hours with minutes.
-
-        Here we return a dict like this:
-
-            { (epoch_id, shift_id) : q }
-
-        that is
-
-            { (t, s) : q }
-
-        """
-        sh = self.coefficients_table[["shift_idx", "start_minute", "end_minute", "idx"]].copy()
-        sh["aux_idx"] = sh["idx"]
-
-        sh = sh.groupby(["shift_idx", "start_minute", "end_minute"])[["aux_idx", "idx"]].agg(
-            {"aux_idx": min, "idx": max}).reset_index()
-
-        # sh[fld_names.RATIO_BEFORE_STD_HOURS] = 1 - sh["start_minute"]/60
-        # sh[fld_names.RATIO_AFTER_STD_HOURS] = sh["end_minute"]/60
-
-        # self.fractions = dict(zip(zip(sh["aux_idx"], sh["shift_idx"]), sh[fld_names.RATIO_BEFORE_STD_HOURS]))
-        # self.fractions.update(dict(zip(zip(sh["idx"], sh["shift_idx"]), sh[fld_names.RATIO_AFTER_STD_HOURS])))
 
     def switch_getter_for_absence_rates(self) -> None:
         if self.absence_table_scheduling.empty:
             self.get_absence_rate_aux = self.get_absence_rate_aux_one_table
         else:
             self.get_absence_rate_aux = self.get_absence_rate_aux_two_tables
-
-    def switch_getter_for_presence_ratios(self) -> None:
-        if self.presence_coefs_sched.empty:
-            self.presence_rate = self.get_presence_ratio_aux_one_table
-        else:
-            self.presence_rate = self.get_presence_ratio_aux_two_tables
 
     def set_backlog_bounds(self) -> None:
         u_bound = float(
@@ -219,18 +276,12 @@ class TabulatedParameterHolder:
             self.backlog_bounds[self.backlog_bounds['process'] == self.process_name]['lower_bound'].iloc[0]
         )
 
-        self.back_upper_bounds = {1: {s: u_bound for s in self.shift_params.shifts}}
-        self.back_lower_bounds = {0: {s: l_bound for s in self.shift_params.shifts}}
+        self.back_upper_bounds = {1: {s: u_bound for s in self.shift_holder.shifts}}
+        self.back_lower_bounds = {0: {s: l_bound for s in self.shift_holder.shifts}}
 
     def max_workers_x(self, m: str, j: int, s: int) -> float:
         qry = f"stage == {j} and shift_idx == {s} and {fld_names.HIRING_MODALITY} == '{m}'"
-        try:
-            coef = float(self.process_workers_full_table.query(qry)["max_workers"].iloc[0])
-        except IndexError:
-            coef = 10
-            logger.warning("No max_workers value set for %s at stage %d and epoch %d in file %s. "
-                           "We will assume max_workers equal to ten." % (m, t, s, FileNames.WORKERS_PARAMETERS))
-        return coef
+        return float(self.process_workers_full_table.query(qry)["max_workers"].iloc[0])
 
     def max_workers_w(self, m: str, from_to: Tuple, s: int) -> float:
         # proces and stage origin and destination 
@@ -241,17 +292,9 @@ class TabulatedParameterHolder:
               f"process_destination == '{Process(pr_dest).name.lower()}' and " + \
               f"stage_destination == {stg_dest} and " + \
               f"{fld_names.HIRING_MODALITY} == '{m}' and " + \
-              f"{fld_names.SHIFT_NAME} == '{self.shift_params.get_shift_name(s)}'"
-        try:
-            coef = float(self.polyvalents_parameters.query(qry)["max_workers"].iloc[0])
-        except IndexError:
-            coef = 10.
-            logger.warning("No maximum of polyvalents set for modality %s,\n"
-                           "                         movement path "
-                           "(%d, %d) --> (%d, %d) for shift %d in file %s.\n"
-                           "                         We will assume maximum of polyvalents equal to ten." %
-                           (m, from_to[0], from_to[1], from_to[2], from_to[3], s, FileNames.POLYV_PARAMS))
-        return coef
+              f"{fld_names.SHIFT_NAME} == '{self.shift_holder.get_shifts(s).kind.name}'"
+
+        return float(self.polyvalents_parameters.query(qry)["max_workers"].iloc[0])
 
     def get_cost_hourly_workers(self) -> float:
         return self.hourly_workers_cost
@@ -269,18 +312,9 @@ class TabulatedParameterHolder:
               f"process_destination == '{Process(pr_dest).name.lower()}' and " + \
               f"stage_destination == {stg_dest} and " + \
               f"{fld_names.HIRING_MODALITY} == '{m}' and " + \
-              f"{fld_names.SHIFT_NAME} == '{self.shift_params.get_shift_name(s)}'"
-        try:
-            coef = float(self.polyvalents_parameters.query(qry)["work_force"].iloc[0])
-        except IndexError:
-            logger.warning("Missing work_force of polyvalents for modality %s,\n"
-                           "                         movement path "
-                           "(%d, %d) --> (%d, %d) for shift %d in file %s.\n"
-                           "                         We will assume this work_force equal to 20." %
-                           (m, from_to[0], from_to[1], from_to[2], from_to[3], s, FileNames.POLYV_PARAMS))
-            coef = 20.
+              f"{fld_names.SHIFT_NAME} == '{self.shift_holder.get_shifts(s).kind.name}'"
 
-        return coef
+        return float(self.polyvalents_parameters.query(qry)["work_force"].iloc[0])
 
     def backlogs_upper_bounds(self, j: int, s: int) -> int:
         return self.back_upper_bounds.get(j, {}).get(s, 0)
@@ -288,117 +322,58 @@ class TabulatedParameterHolder:
     def backlogs_lower_bounds(self, j: int, s: int) -> int:
         return self.back_lower_bounds.get(j, {}).get(s, 0)
 
-    def get_presence_ratio_aux_one_table(self, m: str, t: int, s: int) -> float:
-        # This method is for the case of only presence_table included in input.
-        ts = self.shift_params.shifts_df.query(f"idx == {t}")[fld_names.EPOCH_TIMESTAMP].iloc[0]
-        sh_name = self.shift_params.get_shift_name(s)
+    def presence_rate(self, m: str, t: int, s: int) -> float:
+        ts = self.shift_holder.shifts_df.query(f"idx == {t}")["handling_ts"].iloc[0]
+        sh_name = self.shift_holder.get_shift_name(s)
 
         truth_mask = ((self.presence_coefs_raw["shift_name"] == sh_name) &
                       (self.presence_coefs_raw[fld_names.HIRING_MODALITY] == m) &
                       (self.presence_coefs_raw["hour"] == ts.hour))
         day_name = day_names[ts.dayofweek]
 
-        try:
-            coef = self.presence_coefs_raw[truth_mask][day_name].iloc[0] \
-                    * self.fractions.get((t, s), 1)
+        coef = self.presence_coefs_raw[truth_mask][day_name].iloc[0]
 
-        except IndexError:
-            logger.warning("Missing presence ratio for %s, %s at epoch %d and shift %d in input files.\n"
-                           "                         We will assume presence ratio equal to one.\n" % 
-                           (self.process_name, m, t, s))
-            coef = 1
-
-        return float(coef)
-
-    def get_presence_ratio_aux_two_tables(self, m: str, t: int, s: int) -> float:
-        # This method is for the case of both presence_table and presence_table_scheduling
-        # included in input.
-        ts = self.shift_params.shifts_df.query(f"idx == {t}")[fld_names.EPOCH_TIMESTAMP].iloc[0]
-        sh_name = self.shift_params.get_shift_name(s)
-        day_name = day_names[ts.dayofweek]
-        
-        is_scheduled = ((self.presence_coefs_sched["hour"] == ts) &
-                        (self.presence_coefs_sched["shift_name"] == sh_name) &
-                        (self.presence_coefs_sched[fld_names.HIRING_MODALITY] == m))
-
-        try:
-            _fraction_ = self.fractions.get((t, s), 1)
+        if not self.presence_coefs_sched.empty:
+            is_scheduled = ((self.presence_coefs_sched["hour"] == ts) &
+                            (self.presence_coefs_sched["shift_name"] == sh_name) &
+                            (self.presence_coefs_sched[fld_names.HIRING_MODALITY] == m))
 
             if is_scheduled.any():  # if this hour--shift is scheduled, read from the scheduled table.
-                coef = self.presence_coefs_sched[is_scheduled]["rate"].iloc[0] \
-                        * _fraction_
-            
-            else:
-                truth_mask = ((self.presence_coefs_raw["shift_name"] == sh_name) &
-                              (self.presence_coefs_raw[fld_names.HIRING_MODALITY] == m) &
-                              (self.presence_coefs_raw["hour"] == ts.hour))
-
-                coef = self.presence_coefs_raw[truth_mask][day_name].iloc[0] \
-                        * _fraction_
-
-        except IndexError:
-            logger.warning("Missing presence ratio for %s, %s at epoch %d and shift %d in input files.\n"
-                           "                         We will assume presence ratio equal to one.\n" % 
-                           (self.process_name, m, t, s))
-            coef = 1
+                coef = self.presence_coefs_sched[is_scheduled]["rate"].iloc[0]
 
         return float(coef)
 
-    def get_absence_rate_aux_one_table(self, m: str, t: int, s: int, criterion_field: str) -> float:
-        # This method is for the case of only absence_table included in input.
-        #
-        # criterion_field: justified or unjustified
-
-        ts = self.shift_params.shifts_df.query(f"idx == {t}")[fld_names.EPOCH_TIMESTAMP].iloc[0]
+    def get_absence_rate_aux_one_table(self, m: str, t: int, s: int, criterion_field: str):
+        ts = self.shift_holder.shifts_df.query(f"idx == {t}")[fld_names.EPOCH_TIMESTAMP].iloc[0]
         day_name = day_names[ts.dayofweek]
-        sh_name = self.shift_params.get_shift_name(s)
+        sh_name = self.shift_holder.get_shift_name(s)
 
         mask = ((self.absence_table[fld_names.HIRING_MODALITY] == m) &
                 (self.absence_table["shift_name"] == sh_name) &
                 (self.absence_table["day_name"] == day_name))
 
-        try:
-            coef = self.absence_table[mask][criterion_field].iloc[0]
-        except IndexError:
-            logger.warning("No %s value set for %s, %s at epoch %d and shift %d in file %s.\n"
-                           "                         We will assume that absence ratio equal to 0.1." %
-                           (criterion_field, self.process_name, m, t, s, FileNames.ABSENT_TABLE))
-            coef = 0.1
+        coef = self.absence_table[mask][criterion_field].iloc[0]
+
         return float(coef)
 
-    def get_absence_rate_aux_two_tables(self, m: str, t: int, s: int, criterion_field: str) -> float:
-        # This method is for the case of both absence_table and absence_table_scheduling
-        # included in input.
-        #
-        # criterion_field: justified or unjustified
-        
-        ts = self.shift_params.shifts_df.query(f"idx == {t}")[fld_names.EPOCH_TIMESTAMP].iloc[0]
-        sh_name = self.shift_params.get_shift_name(s)
-        day_name = day_names[ts.dayofweek]
+    def get_absence_rate_aux_two_tables(self, m: str, t: int, s: int, criterion_field: str):
+        ts = self.shift_holder.shifts_df.query(f"idx == {t}")[fld_names.EPOCH_TIMESTAMP].iloc[0]
+        sh_name = self.shift_holder.get_shift_name(s)
 
         is_scheduled = ((self.absence_table_scheduling[fld_names.VAL_START] <= ts) &
                         (ts <= self.absence_table_scheduling[fld_names.VAL_END]) &
                         (self.absence_table_scheduling[fld_names.SHIFT_NAME] == sh_name) &
                         (self.absence_table_scheduling[fld_names.HIRING_MODALITY] == m))
 
-        try:
-            if is_scheduled.any():
-                coef = self.absence_table_scheduling[is_scheduled][criterion_field].iloc[0]
+        if is_scheduled.any():
+            coef = self.absence_table_scheduling[is_scheduled][criterion_field].iloc[0]
 
-            else:
-                mask = ((self.absence_table[fld_names.HIRING_MODALITY] == m) &
-                        (self.absence_table["shift_name"] == sh_name) &
-                        (self.absence_table["day_name"] == day_name))
+        else:
+            mask = ((self.absence_table[fld_names.HIRING_MODALITY] == m) &
+                    (self.absence_table["shift_name"] == sh_name) &
+                    (self.absence_table["day_name"] == day_name))
 
-                coef = self.absence_table[mask][criterion_field].iloc[0]
-
-        except IndexError:
-            logger.warning("Missing %s value for %s, %s at epoch %d and shift %d in file %s\n"
-                           "                         or in file %s.\n"
-                           "                         We will assume that absence ratio equal to 0.1." %
-                           (criterion_field, self.process_name, m, t, s,
-                            FileNames.ABSENT_TABLE, FileNames.ABSENT_TABLE_SCHEDULING))
-            coef = 0.1
+            coef = self.absence_table[mask][criterion_field].iloc[0]
 
         return float(coef)
 
@@ -415,13 +390,13 @@ class TabulatedParameterHolder:
 
 
 class TabulatedInboundDataHolder(DataHolder):
-    def __init__(self, df, process, stages, stage_names, max_epoch_id, initial=None):
-        DataHolder.__init__(self, df, process, stages, stage_names, max_epoch_id, initial)
+    def __init__(self, df, process, stages, max_epoch_id, initial=None):
+        DataHolder.__init__(self, df, process, stages, max_epoch_id, initial)
 
 
 class TabulatedOutboundDataHolder(DataHolder):
-    def __init__(self, df, process, stages, stage_names, max_epoch_id, initial=None, subcarriers_initial=None):
-        DataHolder.__init__(self, df, process, stages, stage_names, max_epoch_id, initial)
+    def __init__(self, df, process, stages, max_epoch_id, initial=None, subcarriers_initial=None):
+        DataHolder.__init__(self, df, process, stages, max_epoch_id, initial)
 
         self.subcarriers_initial = subcarriers_initial
 
@@ -435,45 +410,3 @@ class TabulatedOutboundDataHolder(DataHolder):
 
     def initial_subcarrier_backlog(self, subcarrier, cpt, stage):
         return self.subcarriers_initial.get((stage, cpt), 0) if self.subcarriers_initial is not None else 0
-
-
-@dataclass
-class ExtraHoursParameters:
-    """
-
-    Simple holder of global parameters collection.
-
-    This is perhaps a good template to design the future global ParameterHolder,
-    not depending on Inbound/Outbound.
-
-    Example of df_extra_hours_expanded_table:
-
-    shift_idx  modality rate_of_extra_hours_acceptance max_weekly_extra_hours unitary_cost_extra_hours max_daily_extra_hours                       full_range extra_hours_ratios
-           13 MELI_PERM                           3.00                     12                      1.5                     4 [10, 11, 12, 13, 25, 26, 27, 28]
-           13  DHL_Temp                           1.00                     26                      2.9                     3         [11, 12, 13, 25, 26, 27]
-           26 MELI_PERM                           2.86                     13                      1.6                     2                 [36, 37, 49, 50]
-           26  DHL_Temp                           0.90                     27                      3.0                     4 [34, 35, 36, 37, 49, 50, 51, 52]
-           32 MELI_PERM                           1.74                     21                      2.4                     3         [45, 46, 47, 58, 59, 60]
-           41 MELI_PERM                           2.72                     14                      1.7                     2                 [60, 61, 73, 74]
-           41  DHL_Temp                           0.76                     28                      3.1                     4 [58, 59, 60, 61, 73, 74, 75, 76]
-           46 MELI_PERM                           1.60                     22                      2.5                     3         [69, 70, 71, 82, 83, 84]
-
-    full_range: the list of indices of the extra hour epochs for that shift.
-    For example, shift 13 consists exactly of epochs [14, 15, 16, ... , 24]
-
-    extra_hours_ratios:
-    ------------------
-
-    The idea is that it works like this. For a standard shift {9:15 .. 13:20}, we have
-
-    Missing ratios      Prev EH                     Original shift    Post EH
-    (0.25, 0.67)   ---> [ 1 - 0.25, 1, 1,   0.25] + {9:15 .. 13:20} + [       0.67,  1,  1, 1 - 0.67]
-                         6:15-6:59, 7, 8, 9-9:14                       13:21-13:59, 14, 15, 16-16:20
-
-    df_extra_hours_expanded_table: pd.DataFrame
-    """
-
-    dc_acceptance_ratios: Dict  # Depends on shift_id and modality.
-    dc_daily_maxs: Dict  # Depends on shift_id and modality.
-    dc_presence_ratios_for_extra_hours: Dict   # TAL VEZ NO VENGA ACA
-    dc_extra_hours_ratios: Dict

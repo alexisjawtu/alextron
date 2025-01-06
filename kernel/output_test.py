@@ -1,6 +1,5 @@
 import logging
 import pandas as pd
-import kernel.data_frames_field_names as fld_names
 
 from kernel.general_configurations import InputOutputPaths
 
@@ -14,7 +13,6 @@ class TestFiles:
     INBOUND_CORRECTED_SLAS: str = "inbound_corrected_slas.csv"
     WORKERS_INBOUND: str = "workers_inbound.csv"
     PROCESSED_INBOUND: str = "processed_inbound.csv"
-    SH_NAME_TO_CONTRACT_MOD: str = "shift_contract_modality.csv"
 
     OUTBOUND_INITIAL_CORRECTED_SLAS: str = "outbound_initial_corrected_slas.csv"
     OUTBOUND_CORRECTED_SLAS: str = "outbound_corrected_slas.csv"
@@ -23,7 +21,7 @@ class TestFiles:
 
     PRODUCTIVITY: str = "%s/productivity_check_%s_%s.csv"
     WORKERS_PARAMETERS: str = "workers_parameters.csv"
-    PARAMETERS_TABLE_DEFINITIVE: str = "shifts_table_definitive.csv"
+    PARAMETERS_TABLE_DEFINITIVE: str = "parameters_table_definitive.csv"
     KPI_TOTAL_IDLENESS: str = "kpi_total_idleness.csv"
     KPI_TOTAL_IDLENESS_WITH_EXTRAS: str = "kpi_total_idleness_with_extras.csv"
 
@@ -132,6 +130,7 @@ class Outbound:
 class Hr:
     delta = pd.Timedelta(hours=1)
 
+
 class OutputTest:
     def __init__(self,
                  shift_holder,
@@ -140,10 +139,6 @@ class OutputTest:
                  objective_value_staffing_optimization,
                  objective_value_stock_anticipation):
         self.wrkrs_params = pd.read_csv(f'{Readers.BASEDIR}/{TestFiles.WORKERS_PARAMETERS}').dropna()
-        df_shift_contract_modality = pd.read_csv(f'{Readers.BASEDIR}/{TestFiles.SH_NAME_TO_CONTRACT_MOD}').dropna()
-        mod_name_by_shift_name = df_shift_contract_modality.groupby(fld_names.SHIFT_NAME).agg(list)
-        self.wrkrs_params = Util.explode_modality_all(mod_name_by_shift_name, self.wrkrs_params)
-
         self.shifts = pd.read_csv(f"{Readers.BASEDIR_VAL}/{TestFiles.PARAMETERS_TABLE_DEFINITIVE}")
         self.shift_holder = shift_holder
         self.shift_names = shift_holder.shifts_df['shift_name'].unique()
@@ -296,8 +291,7 @@ class OutputTest:
             return a / b if b else 0
 
         table = process.workers
-        #TODO verificar, no estoy segura que modifique que impacto para tener que cambiar esto
-        modality = self.wrkrs_params['contract_modality'].iloc[0]
+        modality = self.wrkrs_params['contract_modality'].get(0)
         table['permanents_hour'] = table.apply(lambda t: conditional_div(t['permanents_hour'],
                                                                          process.parameters.presence_rate(modality,
                                                                              t['epoch'], t['shift'])), axis=1)
@@ -410,17 +404,3 @@ class OutputTest:
         self.write_objective_value()
 
         self.test_balance()
-
-class Util:
-    TODO: take this out of here. We should have one explode in the library and call it
-    def explode_modality_all(mod_name_by_shift_name, df):
-        if not df.empty:
-            df_all = df.loc[
-                (df[fld_names.HIRING_MODALITY] == fld_names.ALL_MODALITY)]
-            df.drop(df_all.index, inplace=True)
-            if not df_all.empty:
-                df_all = df_all.drop(fld_names.HIRING_MODALITY, axis='columns')
-                df_all = df_all.merge(mod_name_by_shift_name, how='inner', on=fld_names.SHIFT_NAME)
-                df_all = df_all.explode(fld_names.HIRING_MODALITY)
-                df = df.append(df_all)
-        return df
