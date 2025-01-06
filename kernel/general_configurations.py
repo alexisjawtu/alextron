@@ -3,7 +3,7 @@ import pandas as pd
 
 from dataclasses import dataclass
 from typing import Any
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -33,7 +33,7 @@ class FileNames:
     VALIDATION_FOLDER: str = "./validation/"
     WARNING_FOLDER: str = "./warning/"
 
-    LOG_FILE: str = "moletron.log"
+    LOG_FILE: str = "alextron.log"
     CONFIG_FILE: str = "configuration.csv"
     # problem files
     CPX_FILE: str = "staffing"
@@ -101,8 +101,6 @@ class FileNames:
     TOTAL_WORKERS_GROUP_BY_DAY_SHIFT_STAGE: str = "total_workers_{}_by_day_shift_stage.csv"
     TOTAL_WORKERS_GROUP_BY_DAY_SHIFT: str = "total_workers_{}_by_day_shift.csv"
     TOTAL_WORKERS_GROUP_BY_SHIFT: str = "total_workers_{}_by_shift.csv"
-
-    DATABASE_MODEL: str = "./validation/staffing.db"
 
 
 @dataclass

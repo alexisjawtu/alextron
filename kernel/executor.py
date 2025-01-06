@@ -1,17 +1,17 @@
 import cplex
 import logging
-import sqlite3
 import pandas as pd
-import sot_fbm_staffing.util.readers as readers
+
+import kernel.util.readers as readers
 
 from typing import Dict
 
-from sot_fbm_staffing.formulation.model import BasicModel
-from sot_fbm_staffing.formulation.short_term_formulation import ShortTermFormulation
-from sot_fbm_staffing.data.helpers import OutputData, DataHolder, Process, TabulatedParameterHolder
-from sot_fbm_staffing.general_configurations import DevelopDumping, Configuration, FileNames, InputOutputPaths
-from sot_fbm_staffing.output_test import OutputTest
-from sot_fbm_staffing.data.shift_parameters import ShiftParametersGenerator
+from kernel.formulation.model import BasicModel
+from kernel.formulation.short_term_formulation import ShortTermFormulation
+from kernel.data.helpers import OutputData, DataHolder, Process, TabulatedParameterHolder
+from kernel.general_configurations import DevelopDumping, Configuration, FileNames, InputOutputPaths
+from kernel.output_test import OutputTest
+from kernel.data.shift_parameters import ShiftParametersGenerator
 
 
 logger = logging.getLogger(__name__)
@@ -82,26 +82,6 @@ class RollingExecutor:
 
         for process, data in separated_vars.processed.items():
             data.to_csv(FileNames.ITEMS_OUTPUT % (InputOutputPaths.BASEDIR_OUT, process.name.lower()), index=False)
-
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            for process, data in separated_vars.workers.items():
-                data.to_sql(name='out_' + (FileNames.WRKRS_OUTPUT[3:][:-4] % process.name.lower()), con=con,
-                                    if_exists='replace', index=False)
-            for process, data in separated_vars.processed.items():
-                data.to_sql(name='out_' + (FileNames.ITEMS_OUTPUT[3:][:-4] % process.name.lower()), con=con,
-                                      if_exists='replace', index=False)
-
-            separated_vars.polys_follow_up.to_sql(name='out_' + (FileNames.POLYS_OUTPUT[3:][:-4]),
-                                            con=con,
-                                            if_exists='replace', index=False)
-            if Configuration.activate_hourly_workers:
-                separated_vars.hourly_workers.to_sql(
-                        name='out_' + (FileNames.HOURLY_WRKRS_OUTPUT[3:][:-4]),
-                        con=con,
-                        if_exists='replace', index=False)
-                con.commit()
-                con.close()
 
         separated_vars.polys_follow_up.to_csv(FileNames.POLYS_OUTPUT %
                                     InputOutputPaths.BASEDIR_OUT, index=False)
@@ -213,26 +193,6 @@ class RollingExecutor:
             input("Press ENTER to quit.")
             exit()
 
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            short_term_formulation.shift_params.df_workers_costs.to_sql(name='in_' + FileNames.WORKERS_COSTS[:-4],
-                                                                        con=con,
-                                                                        if_exists='replace',
-                                                                        index=False)
-
-            readers.auxiliary_standard_read(FileNames.WORKERS_INITIAL).to_sql(
-                name='in_' + FileNames.WORKERS_INITIAL[:-4],
-                con=con,
-                if_exists='replace',
-                index=False)
-
-            if Configuration.activate_transfer:
-                short_term_formulation.df_transfers.to_sql(name='in_' + FileNames.TRANSFERS[:-4], con=con,
-                                                           if_exists='replace',
-                                                           index=False)
-            con.commit()
-            con.close()
-
         if Configuration.anticipate_backlog:
             logger.info("Building second model to anticipate backlogs.\n")
 
@@ -249,6 +209,7 @@ class RollingExecutor:
                 basic_result.cplex_solution_list,
                 basic_result.cplex_ids,
                 self.human_epoch)
+
             if short_term_formulation:
                 with cplex.Cplex() as cpx_stock:
 
@@ -304,9 +265,6 @@ class RollingExecutor:
             made_output = short_term_formulation.make_output()
 
             RollingExecutor.write_separate_results(made_output)
-
-            if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE and not Configuration.anticipate_backlog:
-                short_term_formulation.sol_to_sql()
 
             if DevelopDumping.DEV or DevelopDumping.QAS or Configuration.generate_validation_files:
                 logger.info(f"Performing output checks. Writing results in folder {FileNames.VALIDATION_FOLDER}.\n")

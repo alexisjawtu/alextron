@@ -1,8 +1,7 @@
 import pandas as pd
-from sot_fbm_staffing.formulation.formulation import PostProcessor
 
 
-class OutboundPostProcessor(PostProcessor):
+class OutboundPostProcessor:
     def __init__(self, data_holder):
         self.output: pd.DataFrame = None
         self.data = None

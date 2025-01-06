@@ -1,8 +1,8 @@
 import logging
 import pandas as pd
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.general_configurations import InputOutputPaths
+from kernel.general_configurations import InputOutputPaths
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -412,6 +412,7 @@ class OutputTest:
         self.test_balance()
 
 class Util:
+    TODO: take this out of here. We should have one explode in the library and call it
     def explode_modality_all(mod_name_by_shift_name, df):
         if not df.empty:
             df_all = df.loc[

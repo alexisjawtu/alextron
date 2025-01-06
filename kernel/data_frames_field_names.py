@@ -1,3 +1,8 @@
+"""
+This file has the constants that store the names of the fields that the user
+must write in the input of our linear optimizer.
+"""
+
 from typing import Dict, List
 
 SHIFT_NAME: str = "shift_name"
