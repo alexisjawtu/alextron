@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Dict, Tuple, List
 from dateutil.parser import ParserError
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.general_configurations import InputOutputPaths, FileNames
+from kernel.general_configurations import InputOutputPaths, FileNames
 
 logger = logging.getLogger(__name__)
 
@@ -123,28 +123,28 @@ def log_error(error: FileNotFoundError, file: str) -> None:
 
 def log_parser_error(error: ParserError, column: str, file: str) -> None:
     logger.error(error)
-    input(f"A parser error has occurred in column {column} of file {file}. Press ENTER to close.")
+    input(f"A parser error occurred in column {column} of file {file}. Press ENTER to close.")
 
 
 def check_day_names(df: pd.DataFrame, column: str, file: str) -> None:
     if (~df[column].isin(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])).any():
-        logger.error(f'An error has occurred parsing a day in column {column} of file {file}.')
+        logger.error(f'An error occurred parsing a day in column {column} of file {file}.')
         input("Press ENTER to close.")
-        raise Exception(f'An error has occurred parsing a day in column {column} of file {file}.')
+        raise Exception(f'An error occurred parsing a day in column {column} of file {file}.')
 
 
 def check_stage_valid(df: pd.DataFrame, column: str, file: str) -> None:
     if ((df[column] != 0) & (df[column] != 1)).any():
-        logger.error(f'An error has occurred parsing a stage value in column {column} of file {file}.')
+        logger.error(f'An error occurred parsing a stage value in column {column} of file {file}.')
         input("Press ENTER to close.")
-        raise Exception(f'An error has occurred parsing a stage value in column {column} of file {file}.')
+        raise Exception(f'An error occurred parsing a stage value in column {column} of file {file}.')
 
 
 def check_hour_valid(df: pd.DataFrame, column: str, file: str) -> None:
     if ~((df[column] >= 0) & (df[column] <= 23)).any():
-        logger.error(f'An error has occurred parsing an hour value in column {column} of file {file}.')
+        logger.error(f'An error occurred parsing an hour value in column {column} of file {file}.')
         input("Press ENTER to close.")
-        raise Exception(f'An error has occurred parsing an hour value in column {column} of file {file}.')
+        raise Exception(f'An error occurred parsing an hour value in column {column} of file {file}.')
 
 
 def read_shifts() -> pd.DataFrame:

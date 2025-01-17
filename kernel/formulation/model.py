@@ -8,13 +8,13 @@ import pprint
 from dataclasses import dataclass
 from typing import Tuple, Dict, List
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.data.helpers import *
-from sot_fbm_staffing.data.shift_parameters import ShiftParametersGenerator
-from sot_fbm_staffing.stages.short_term_model import ShortTermModel
-from sot_fbm_staffing.general_configurations import *
-from sot_fbm_staffing.util.readers import imported_shift_names_and_indices
+from kernel.data.helpers import *
+from kernel.data.shift_parameters import ShiftParametersGenerator
+from kernel.stages.short_term_model import ShortTermModel
+from kernel.general_configurations import *
+from kernel.util.readers import imported_shift_names_and_indices
 
 
 logger = logging.getLogger(__name__)

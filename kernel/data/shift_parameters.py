@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Tuple, List, Dict, Any
 
-import sot_fbm_staffing.util.readers as readers
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.util.readers as readers
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.general_configurations import DevelopDumping, InputOutputPaths, FileNames
-from sot_fbm_staffing.util.readers import imported_shift_names_and_indices
-from sot_fbm_staffing.data.warehouses import WorkersParametersProcessor
+from kernel.general_configurations import DevelopDumping, InputOutputPaths, FileNames
+from kernel.util.readers import imported_shift_names_and_indices
+from kernel.data.warehouses import WorkersParametersProcessor
 
 day_names = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat', 6: 'Sun'}
 logger = logging.getLogger(__name__)

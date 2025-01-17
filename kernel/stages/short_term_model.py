@@ -5,11 +5,11 @@ import pandas as pd
 
 from typing import List, Tuple, Dict
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.data.helpers import CplexIds, TabulatedParameterHolder, DataHolder, Process
-from sot_fbm_staffing.data.shift_parameters import ShiftParametersGenerator
-from sot_fbm_staffing.general_configurations import DevelopDumping, Configuration, FileNames
+from kernel.data.helpers import CplexIds, TabulatedParameterHolder, DataHolder, Process
+from kernel.data.shift_parameters import ShiftParametersGenerator
+from kernel.general_configurations import DevelopDumping, Configuration, FileNames
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)

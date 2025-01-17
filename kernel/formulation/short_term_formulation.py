@@ -6,15 +6,15 @@ import pandas as pd
 
 from typing import List, Tuple, Dict
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
-import sot_fbm_staffing.util.readers as readers
+import kernel.data_frames_field_names as fld_names
+import kernel.util.readers as readers
 
 from datetime import datetime
-from sot_fbm_staffing.data.helpers import Process, ExtraHoursParameters
-from sot_fbm_staffing.formulation.model import BasicModel
-from sot_fbm_staffing.stages.short_term_inbound_model import ShortTermInboundModel
-from sot_fbm_staffing.stages.short_term_outbound_model import ShortTermOutboundModel
-from sot_fbm_staffing.general_configurations import (
+from kernel.data.helpers import Process, ExtraHoursParameters
+from kernel.formulation.model import BasicModel
+from kernel.stages.short_term_inbound_model import ShortTermInboundModel
+from kernel.stages.short_term_outbound_model import ShortTermOutboundModel
+from kernel.general_configurations import (
     DevelopDumping,
     Configuration,
     FileNames,
