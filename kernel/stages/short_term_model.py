@@ -1,6 +1,6 @@
 import cplex
 import logging
-import sqlite3
+
 import pandas as pd
 
 from typing import List, Tuple, Dict
@@ -381,22 +381,6 @@ class ShortTermModel:
                             names=[f"c_reps_evolution_{modality}_{self.stage_names[j]}_{shift_names[n]}"]
                         )
 
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'modality': modality,
-                                              'stage': self.stage_names[j],
-                                              'shift': shift_names[n]}
-                                             for j in range(self.stages)
-                                             for shift_type, shift_names in
-                                             self.sh.mapper.dc_partial_order_of_shifts.items()
-                                             for n in range(len(shift_names))
-                                             for modality in
-                                             self.dc_contract_modalities_for_shift_name[shift_names[n]]])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_reps_evolution', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
-
     def set_total_permanents_equalities(self):
         for j in range(self.stages):
             for shift_idx in self.sh.shifts_for_epoch_range(self.start, self.end):
@@ -416,23 +400,7 @@ class ShortTermModel:
                                f"_{shift_idx}"]
                     )
 
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'modality': modality,
-                                              'stage': self.stage_names[j],
-                                              'shift_kind': self.sh.get_shift_name(shift_idx),
-                                              'shift_idx': shift_idx, }
-                                             for j in range(self.stages)
-                                             for shift_idx in self.sh.shifts_for_epoch_range(self.start, self.end)
-                                             for modalities in self.dc_contract_types_and_modalities.values()
-                                             for modality in modalities])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_total_permanents_equalities', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
-
     def declare_and_constraint_stock_variables(self):
-        list_indexes = []
         cpts = [cpt for cpt in self.dh.cpts_for_epoch_range(self.start, self.end) if cpt <= self.end]
         for cpt in cpts:
 
@@ -481,27 +449,14 @@ class ShortTermModel:
                             rhs=[0],
                             names=[f"c_stock_def_{self.process.name[0:3]}_{cpt}_{j}_{epoch}"]
                         )
-                        list_indexes.append({
-                            "process": self.process.name[0:3],
-                            "cpt": cpt,
-                            "stage": j,
-                            "epoch": epoch
-                        })
-
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records(list_indexes)
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_total_permanents_equalities', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
 
     def set_optimal_permanent_reps_values(self) -> None:
         # Here we set and fix the values of perm reps found in the previous run.
         # This method, and the variables involved, should be in ShortTermFormulation too.
-        list_indices_fix_perms = []
-        list_indices_fix_total_perms = []
-        list_indices_fix_hr_perms = []
-        list_indices_fix_hr_total_perms = []
+ se va -->        list_indices_fix_perms = []
+ se va -->        list_indices_fix_total_perms = []
+ se va -->        list_indices_fix_hr_perms = []
+ se va -->        list_indices_fix_hr_total_perms = []
 
         for shift in self.sh.shifts_for_epoch_range(self.start, self.end):
             for modality in self.sh.dc_modalities_by_shift_idx[shift]:
@@ -521,7 +476,7 @@ class ShortTermModel:
                         rhs=[opt_val_x],
                         names=[f"c_fix_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}"]
                     )
-                    list_indices_fix_perms.append({
+ se va -->          list_indices_fix_perms.append({
                         "process": self.process.name[0:3],
                         "modality": modality,
                         "stage": j,
@@ -582,7 +537,7 @@ class ShortTermModel:
         if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
             with_name = {"constraint_fix_hr_total_perms": list_indices_fix_hr_total_perms,
                          "constraint_fix_hr_perms": list_indices_fix_hr_perms,
-                         "constraint_fix_perms": list_indices_fix_perms,
+ se va -->               "constraint_fix_perms": list_indices_fix_perms,
                          "constraint_fix_total_perms": list_indices_fix_total_perms}
             con = sqlite3.connect(FileNames.DATABASE_MODEL)
             for name, indexes in iter(with_name.items()):
