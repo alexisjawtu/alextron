@@ -5,11 +5,11 @@ import pandas as pd
 
 from typing import List, Tuple, Dict
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.data.helpers import CplexIds, TabulatedParameterHolder, DataHolder, Process
-from sot_fbm_staffing.data.shift_parameters import ShiftParametersGenerator
-from sot_fbm_staffing.general_configurations import DevelopDumping, Configuration, FileNames
+from kernel.data.helpers import CplexIds, TabulatedParameterHolder, DataHolder, Process
+from kernel.data.shift_parameters import ShiftParametersGenerator
+from kernel.general_configurations import DevelopDumping, Configuration, FileNames
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -453,7 +453,6 @@ class ShortTermModel:
     def set_optimal_permanent_reps_values(self) -> None:
         # Here we set and fix the values of perm reps found in the previous run.
         # This method, and the variables involved, should be in ShortTermFormulation too.
- se va -->        list_indices_fix_perms = []
  se va -->        list_indices_fix_total_perms = []
  se va -->        list_indices_fix_hr_perms = []
  se va -->        list_indices_fix_hr_total_perms = []
@@ -476,12 +475,6 @@ class ShortTermModel:
                         rhs=[opt_val_x],
                         names=[f"c_fix_perms_{self.process.name[0:3]}_{modality}_{j}_{shift}"]
                     )
- se va -->          list_indices_fix_perms.append({
-                        "process": self.process.name[0:3],
-                        "modality": modality,
-                        "stage": j,
-                        "shift": shift
-                    })
 
                     self.cpx.linear_constraints.add(
                         lin_expr=[
@@ -533,18 +526,6 @@ class ShortTermModel:
                             "shift": shift,
                             "epoch": epoch
                         })
-
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            with_name = {"constraint_fix_hr_total_perms": list_indices_fix_hr_total_perms,
-                         "constraint_fix_hr_perms": list_indices_fix_hr_perms,
- se va -->               "constraint_fix_perms": list_indices_fix_perms,
-                         "constraint_fix_total_perms": list_indices_fix_total_perms}
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            for name, indexes in iter(with_name.items()):
-                raw = pd.DataFrame.from_records(indexes)
-                raw.to_sql(name=name, con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
 
     def set_stock_objective_constraints(self):
         # This is a space to experiment with objective functions to anticipate backlog
