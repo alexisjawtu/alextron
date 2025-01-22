@@ -1,6 +1,6 @@
 import cplex
 
-from sot_fbm_staffing.stages.short_term_model import ShortTermModel
+from kernel.stages.short_term_model import ShortTermModel
 
 
 class ShortTermInboundModel(ShortTermModel):

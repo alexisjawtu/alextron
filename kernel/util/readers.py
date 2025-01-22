@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Dict, Tuple, List
 from dateutil.parser import ParserError
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.general_configurations import InputOutputPaths, FileNames
+from kernel.general_configurations import InputOutputPaths, FileNames
 
 logger = logging.getLogger(__name__)
 

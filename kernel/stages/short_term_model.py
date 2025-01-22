@@ -548,20 +548,6 @@ class ShortTermModel:
                                f"{self.stage_names[stage]}_"
                                f"{shift}"]
                     )
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'modality': modality,
-                                              'stage': self.stage_names[stage],
-                                              'process': self.process.name[0:3],
-                                              'shift': shift}
-                                             for shift in self.sh.shifts_for_epoch_range(self.start, self.end)
-                                             for stage in range(self.stages)
-                                             for modalities in self.dc_contract_types_and_modalities.values()
-                                             for modality in modalities])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_available_reps_natural', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
 
     def set_inner_constraints(self):
         # TODO optimize this function
@@ -726,73 +712,6 @@ class ShortTermModel:
                 except KeyError:
                     logger.error("%s j = %d, c = %d\n" % (self.process.name, j, c))
 
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            backlog = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'cpt': int(c),
-                'stage': self.stage_names[j],
-                'epoch': int(t)}
-                for t in range(max(0, self.start - 1), self.end + 1)
-                for j in range(self.stages)
-                for c in
-                [c for c in self.dh.dict_cpts_for_epoch[t] if c <= self.end and self.min_stage_for_cpt[c] <= j]
-            ])
-
-            max_processing = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'cpt': int(c),
-                'stage': self.stage_names[stage]}
-                for stage in range(self.stages)
-                for c in
-                [cpt for cpt in self.dh.cpts_for_epoch_range(self.start, self.end) if
-                 1 == self.min_stage_for_cpt[cpt]]
-            ])
-
-            ylim = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'cpt': int(c),
-                'epoch': t,
-                'stage': self.stage_names[stage]}
-                for t in range(self.start, self.end + 1)
-                for stage in range(self.stages)
-                for c in [c for c in self.dh.dict_cpts_for_epoch[t]
-                          if c <= self.end and self.min_stage_for_cpt[c] <= stage]
-            ])
-
-            perms_presenteeism = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'modality': modality,
-                'cpt': int(c),
-                'epoch': t,
-                'stage': self.stage_names[stage]}
-                for t in range(self.start, self.end + 1)
-                for stage in range(self.stages)
-                for c in [c for c in self.dh.dict_cpts_for_epoch[t] if c <= self.end and self.min_stage_for_cpt[c] <= stage]
-                for m in self.dc_contract_types_and_modalities
-                for modality in self.dc_contract_types_and_modalities[m]
-            ])
-
-            zero_surplus = pd.DataFrame.from_records([{
-                'process': self.process.name[0:3],
-                'cpt': int(c),
-                'stage': self.stage_names[stage]}
-                for stage in range(self.stages)
-                for c in
-                filter(lambda _: _ <= self.global_max_epoch + 1 and self.min_stage_for_cpt[_] <= stage,
-                       self.b.keys())
-            ])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            backlog.to_sql(name='constraint_backlog', con=con, if_exists='replace', index=False)
-            if not max_processing.empty:
-                max_processing.to_sql(name='constraint_max_processing', con=con, if_exists='replace', index=False)
-            ylim.to_sql(name='constraint_ylim', con=con, if_exists='replace', index=False)
-            perms_presenteeism.to_sql(name='constraint_z_totals_per_hour', con=con, if_exists='replace', index=False)
-            perms_presenteeism.to_sql(name='constraint_perms_presenteeism', con=con, if_exists='replace', index=False)
-            zero_surplus.to_sql(name='constraint_zero_surplus', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
-
     def bound_backlogs_by_above(self):
         self.bound_backlogs(self.parameters.backlogs_upper_bounds, 'L', 'c_backlog_upbound')
 
@@ -821,17 +740,3 @@ class ShortTermModel:
                             rhs=[bound],
                             names=[f"{constraint_name}_{self.process.name[0:3]}_{j}_{shift}_{t}"]
                         )
-
-        if DevelopDumping.DEV and DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'epoch': t,
-                                              'stage': self.stage_names[j],
-                                              'process': self.process.name[0:3],
-                                              'shift': shift}
-                                             for t in range(self.start, self.end + 1)
-                                             for j in range(1, self.stages)
-                                             for shift in self.sh.shifts_for_epoch.get(t, [])])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_' + constraint_name, con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()

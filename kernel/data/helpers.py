@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Tuple, List, Dict, Any, Callable
 
-import sot_fbm_staffing.data_frames_field_names as fld_names
+import kernel.data_frames_field_names as fld_names
 
-from sot_fbm_staffing.data.shift_parameters import ShiftParametersGenerator
-from sot_fbm_staffing.general_configurations import FileNames
+from kernel.data.shift_parameters import ShiftParametersGenerator
+from kernel.general_configurations import FileNames
 
 
 day_names = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat', 6: 'Sun'}
