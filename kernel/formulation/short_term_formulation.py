@@ -1,6 +1,6 @@
 import cplex
 import logging
-import sqlite3
+
 import numpy as np
 import pandas as pd
 
@@ -428,35 +428,6 @@ class ShortTermFormulation(BasicModel):
                             names=[f"c_fix_hr_polys_{m}_{'_'.join(map(str, from_to))}_{shift}_{epoch}"]
                         )
 
-        if DevelopDumping.DEV & DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'modality': modality,
-                                              'stage_origin': from_to[1],
-                                              'process_origin': from_to[0],
-                                              'stage_destination': from_to[3],
-                                              'process_destination': from_to[1],
-                                              'shift': shift,
-                                              'epoch': epoch}
-                                             for shift in self.shift_numbers
-                                             for epoch in self.shift_params.epochs_for_shift[shift][
-                                                 self.shift_params.epochs_for_shift[shift] <= self.end]
-                                             for from_to in self.orig_dest
-                                             for modality in self.shift_params.dc_modalities_by_shift_idx[shift]])
-
-            raw1 = pd.DataFrame.from_records([{'modality': modality,
-                                               'stage_origin': from_to[1],
-                                               'process_origin': from_to[0],
-                                               'stage_destination': from_to[3],
-                                               'process_destination': from_to[1],
-                                               'shift': shift}
-                                              for shift in self.shift_numbers
-                                              for from_to in self.orig_dest
-                                              for modality in self.shift_params.dc_modalities_by_shift_idx[shift]])
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_fix_hr_polys', con=con, if_exists='replace', index=False)
-            raw1.to_sql(name='constraint_fix_shift_polys', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
-
     def set_optimal_hourly_constraint(self) -> None:
         # Here we set and fix the values of polyvalence found in the previous run.
         for process, stm in iter(self.process_stages.items()):
@@ -473,19 +444,6 @@ class ShortTermFormulation(BasicModel):
                         rhs=[opt_val_h],
                         names=[f"c_fix_hourlies_{process.name[0:3]}_{j}_{t}"]
                     )
-        if DevelopDumping.DEV & DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'process': process.name,
-                                              'stage': j,
-                                              'epoch': t}
-                                             for process, stm in iter(self.process_stages.items())
-                                             for t in range(stm.start, stm.end + 1)
-                                             for j in range(stm.stages)
-                                             ])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_polys_shift_assigned', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
 
     def declare_global_minmaxs(self) -> None:
         # minmax variables. One per kind of shift and per stage.
@@ -592,23 +550,6 @@ class ShortTermFormulation(BasicModel):
                             names=[f"c_global_minmax_{modality}_{shift}_{shift_name}_{process.name[0:3]}_{j}"]
                         )
 
-        if DevelopDumping.DEV & DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'process': process.name[0:3],
-                                              'stage': j,
-                                              'modality': modality,
-                                              'shift': shift,
-                                              'kind': self.shift_params.get_shift_name(shift)}
-                                             for process in self.process_stages
-                                             for j in range(self.process_stages[process].stages)
-                                             for shift in self.shift_numbers
-                                             for modality in self.shift_params.dc_modalities_by_shift_idx[shift]
-                                             ])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_global_minmax', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
-
     def set_linking_constraints(self) -> None:
         for s in self.shift_numbers:
             for modality in self.shift_params.dc_modalities_by_shift_idx[s]:
@@ -624,22 +565,6 @@ class ShortTermFormulation(BasicModel):
                             rhs=[0],
                             names=[f"c_link_{s}_{process.name[0:3]}_{modality}_{j}"]
                         )
-
-        if DevelopDumping.DEV & DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records([{'process': process.name[0:3],
-                                              'stage': j,
-                                              'modality': modality,
-                                              'shift': shift}
-                                             for process, stm in iter(self.process_stages.items())
-                                             for j in range(stm.stages)
-                                             for shift in self.shift_numbers
-                                             for modality in self.shift_params.dc_modalities_by_shift_idx[shift]
-                                             ])
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_global_minmax', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
 
     def set_params(self) -> None:
         # Here we set CPLEX running parameters, presumably defined by the developers.
@@ -764,16 +689,6 @@ class ShortTermFormulation(BasicModel):
             names=names
         )
 
-        if DevelopDumping.DEV & DevelopDumping.MAKE_TABLE:
-            raw0 = pd.DataFrame.from_records(list_indices_zero)
-            raw = pd.DataFrame.from_records(list_indices)
-
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_work_cap', con=con, if_exists='replace', index=False)
-            raw0.to_sql(name='constraint_work_cap_zero', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
-
     def set_polyvalent_presenteeism_constraint(self) -> None:
         list_indices = []
         for stm in self.process_stages.values():
@@ -808,13 +723,6 @@ class ShortTermFormulation(BasicModel):
                                                          'process_destination': from_to[1],
                                                          "modality": modality
                                                          })
-
-        if DevelopDumping.DEV & DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records(list_indices)
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_polys_presenteeism', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
 
     def set_real_totals_per_stage_constraint(self) -> None:
         """
@@ -880,13 +788,6 @@ class ShortTermFormulation(BasicModel):
                                                  "shift": s,
                                                  "epoch": t
                                                  })
-
-        if DevelopDumping.DEV & DevelopDumping.MAKE_TABLE:
-            raw = pd.DataFrame.from_records(list_indices)
-            con = sqlite3.connect(FileNames.DATABASE_MODEL)
-            raw.to_sql(name='constraint_real_totals_per_stage_hour', con=con, if_exists='replace', index=False)
-            con.commit()
-            con.close()
 
     def set_extra_hours_variables_and_constraints(self) -> None:
         """ Put the extra_hours -- specific constraints to the model.
