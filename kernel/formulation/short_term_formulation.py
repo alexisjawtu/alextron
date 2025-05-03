@@ -54,7 +54,7 @@ class ShortTermFormulation(BasicModel):
             self.dc_shifts_from,
             self.dc_shifts_to,
             self.dc_workers_initial_inbound,
-            self.ls_shift_kinds,
+            self.shift_kinds,
             self.dc_contract_modalities_for_shift_name,
             self.dc_contract_types_and_modalities,
             self.dc_shift_names_per_contract_modality
@@ -76,7 +76,7 @@ class ShortTermFormulation(BasicModel):
             self.dc_shifts_from,
             self.dc_shifts_to,
             self.dc_workers_initial_outbound,
-            self.ls_shift_kinds,
+            self.shift_kinds,
             self.dc_contract_modalities_for_shift_name,
             self.dc_contract_types_and_modalities,
             self.dc_shift_names_per_contract_modality
@@ -187,11 +187,11 @@ class ShortTermFormulation(BasicModel):
         """
         pd_contract_modalities = readers.auxiliary_standard_read("contract_modality_type.csv")
         arr_modalities = pd_contract_modalities["contract_modality"].unique()
-        ls_shift_names = [k.name for k in self.ls_shift_kinds]
+        shift_names = [k.name for k in self.shift_kinds]
 
-        self.dc_contract_modalities_for_shift_name = {key: arr_modalities.tolist() for key in ls_shift_names}
+        self.dc_contract_modalities_for_shift_name = {key: arr_modalities.tolist() for key in shift_names}
 
-        self.dc_shift_names_per_contract_modality = {key: ls_shift_names.copy() for key in arr_modalities}
+        self.dc_shift_names_per_contract_modality = {key: shift_names.copy() for key in arr_modalities}
 
     def set_contract_types_and_modalities(self) -> None:
         """
@@ -420,7 +420,7 @@ class ShortTermFormulation(BasicModel):
                 for j in range(self.process_stages[process].stages):
                     self.max_wrkrs_per_shift_kind_global[modality][process.value][j] = {}
 
-                    for kind in self.ls_shift_kinds:
+                    for kind in self.shift_kinds:
                         m_sk = self.cpx.variables.add(
                             obj=[self.shift_holder.get_cost(kind, fld_names.UNITARY_COST)],
                             types=["C"],

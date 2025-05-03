@@ -97,7 +97,7 @@ class BasicModel:
         self.dc_shifts_from: Dict = {}
         self.dc_shifts_to: Dict = {}
 
-        self.ls_shift_kinds: List = list(ShiftKind)
+        self.shift_kinds: List = list(ShiftKind)
 
         self.dc_contract_modalities_for_shift_name: Dict = {}
         self.dc_shift_names_per_contract_modality: Dict = {}
