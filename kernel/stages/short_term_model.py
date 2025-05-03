@@ -35,7 +35,7 @@ class ShortTermModel:
             dc_shifts_from: Dict,
             dc_shifts_to: Dict,
             dc_workers_initial: Dict,
-            ls_shift_kinds: List,
+            shift_kinds: List,
             dc_contract_modalities_for_shift_name: Dict,
             dc_contract_types_and_modalities: Dict,
             dc_modalities_and_contract_types: Dict,
@@ -86,7 +86,7 @@ class ShortTermModel:
         self.dc_shifts_to: Dict = dc_shifts_to
 
         self.dc_workers_initial: Dict = dc_workers_initial
-        self.ls_shift_kinds: List = ls_shift_kinds  # an enumeration of the shift_kinds to traverse
+        self.shift_kinds: List = shift_kinds  # an enumeration of the shift_kinds to traverse
 
         # TODO: check if we declared only the vars with modalities per shift_name
         self.dc_contract_modalities_for_shift_name: Dict = dc_contract_modalities_for_shift_name
@@ -104,7 +104,7 @@ class ShortTermModel:
 
     def declare_local_min_maxs(self):
         # Legacy minmax variables for current process. One per kind of shift.
-        for kind in self.ls_shift_kinds:
+        for kind in self.shift_kinds:
             m_s = self.cpx.variables.add(
                 obj=[1],
                 lb=[0],
